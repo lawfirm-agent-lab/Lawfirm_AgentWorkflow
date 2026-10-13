@@ -1,0 +1,24 @@
+.env
+.venv/
+data/*
+!data/.gitkeep
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Private environment variants; keep the shareable template.
+.env.*
+!.env.example
+
+# Runtime logs.
+*.log
+logs/
+
+# OS and editor temporary files.
+.DS_Store
+._*
+Thumbs.db
+Desktop.ini
+*.swp
+*.swo
+*~

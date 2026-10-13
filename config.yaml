@@ -1,0 +1,4 @@
+# check_interval_minutes is reserved; no scheduler is enabled yet.
+dockets:
+  - 73132799
+check_interval_minutes: 30
