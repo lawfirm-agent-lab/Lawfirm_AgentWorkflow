@@ -270,14 +270,15 @@ SQLite。强制 TLS，保留更严格的证书验证；限定 public schema，�
 上传后由所有者在 Actions → Check cloud storage → Run workflow 手动运行。
 
 
-## 手动抓取案件并保存云端基线
+## 每小时抓取案件并保存云端状态
 
-`Check dockets manually` 工作流仅支持手动运行，没有 schedule。
+`Check dockets hourly` 工作流每小时 UTC 第 7 分钟计划运行一次（`7 * * * *`），
+同时保留手动入口。上传到默认分支后才会启用；本地修改不会启动云端任务。
 所有者需先配置两个 repository Secrets：`DATABASE_URL`（已验证的 Session
 pooler URI）和 `COURTLISTENER_TOKEN`（现有 CourtListener API Token）。
 不要把 Token 或连接字符串提交到仓库。无需 SMTP 或 LLM 密钥。
 
-上传后，在 Actions → Check dockets manually → Run workflow 运行。
+上传后，可在 Actions → Check dockets hourly → Run workflow 手动运行。
 入口 `python -m src.main --cloud-check` 读取 `config.yaml` 中的案件编号，
 当前为 73132799。它不读取 `.env`，必须连接 PostgreSQL，不会退回 SQLite；
 缺少任一 Secret 时在抓取前失败。连接强制 TLS，保留严格证书验证选项。
@@ -295,3 +296,19 @@ GitHub job 限时 15 分钟，同一监控组串行运行，不取消正在进�
 预期验证：第一次成功显示 baseline established；再次运行且源数据未变化时，
 added 和 modified 均为 0。是否出现真实更新取决于 CourtListener 数据。
 当前本地测试使用模拟 API 和内存 SQLite，不调用真实 CourtListener 或 Supabase。
+
+
+### 每小时检查的额度与运行边界
+
+仅案件抓取工作流增加定时触发；Tests、数据库初始化和连接/读写检查的触发方式
+保持原样。没有启用邮件、PDF 下载、OCR 或 LLM。
+GitHub 定时任务可能延迟或漏执行，不保证严格每 60 分钟或更新后 60 分钟内通知。
+
+按 31 天、单个 job 计算，每月计划 744 次。若每次计费 1 分钟，约 744 分钟；
+若每次计费 2 分钟，约 1,488 分钟。测试、手动重跑和其他仓库会共享账户额度。
+保留 Actions 的 $0 预算及 Stop usage 设置；超额时可能停止运行。
+15 分钟 job 超时只是防止任务无限运行，不保证每次只消耗 1 分钟。
+启用后应在账户 Usage 中核对实际用量。需要暂停时，可在 Actions 页面禁用
+该工作流；重新启用后，手动检查可用于确认已恢复。
+
+调度规则参考：https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule
