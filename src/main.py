@@ -12,6 +12,7 @@ from src.ingest.courtlistener import fetch_entries
 from src.store.db import Store, StoreError
 from src.notify.digest import build_digest
 from src.notify.email import deliver, settings
+from src.notify.queue import send_pending_changes
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -24,7 +25,13 @@ def main():
     parser.add_argument("--send-email", action="store_true", help="Send digests via configured SMTP; otherwise save previews only")
     parser.add_argument("--cloud-check", action="store_true",
                         help="Fetch to required PostgreSQL using environment only; no email or local exports")
+    parser.add_argument("--cloud-email", action="store_true",
+                        help="Explicit cloud fetch plus pending-change email delivery; no .env or exports")
     args = parser.parse_args()
+    if args.cloud_email:
+        if args.cloud_check or args.import_baseline or args.email_demo or args.send_email:
+            parser.error("--cloud-email must be used on its own")
+        args.cloud_check = True
     if args.cloud_check and (args.import_baseline or args.email_demo or args.send_email):
         parser.error("--cloud-check cannot be combined with baseline import or email options")
     if args.import_baseline and (args.email_demo or args.send_email):
@@ -69,7 +76,7 @@ def main():
     if not args.cloud_check:
         (ROOT / "data").mkdir(exist_ok=True)
     try:
-        email_config = settings() if args.send_email else None
+        email_config = settings() if (args.send_email or args.cloud_email) else None
     except ValueError as exc:
         print(exc)
         return 1
@@ -120,7 +127,7 @@ def main():
                                for change in store.list_changes(docket_id)]
                 matched = False
                 for event_key, candidates in batches:
-                    digest = build_digest(docket_id, candidates, demo=args.email_demo)
+                    digest = build_digest(docket_id, candidates, demo=args.email_demo, detected_change=not args.email_demo)
                     if not digest:
                         continue
                     matched = True
@@ -135,6 +142,11 @@ def main():
                             print(exc)
                 if not matched:
                     print("No important updates selected; no email sent.")
+        if args.cloud_email:
+            # Drain persisted changes even when today's API fetch failed.
+            for docket_id in dict.fromkeys(dockets):
+                if send_pending_changes(store, docket_id, email_config):
+                    failed = True
     except StoreError as exc:
         failed = True
         print(f"Check stopped: {exc}. Inspect run and email status before retrying.")

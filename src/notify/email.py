@@ -18,7 +18,10 @@ def settings():
         value = values[key]
         if any(c in value for c in "\r\n,; ") or value.count("@") != 1:
             raise ValueError(key + " must be one plain email address")
-    values["SMTP_PORT"] = int(values["SMTP_PORT"])
+    try:
+        values["SMTP_PORT"] = int(values["SMTP_PORT"])
+    except ValueError:
+        raise ValueError("SMTP_PORT must be 465 or 587") from None
     if values["SMTP_PORT"] not in (465, 587):
         raise ValueError("Use TLS SMTP port 465 or STARTTLS port 587")
     return values
@@ -28,14 +31,14 @@ def deliver(store, docket_id, digest, event_key, cfg, transport=None):
     subject, body = digest
     key = hashlib.sha256(json.dumps([cfg["EMAIL_FROM"], cfg["EMAIL_TO"], event_key]).encode()).hexdigest()
     message_id = make_msgid()
-    inserted = store.claim_email(key, docket_id, cfg["EMAIL_TO"], subject, body, message_id)
-    if not inserted:
-        status = store.email_status(key)
-        return f"Skipped existing email ({status}); no duplicate send."
     message = EmailMessage()
     message["From"], message["To"] = cfg["EMAIL_FROM"], cfg["EMAIL_TO"]
     message["Subject"], message["Message-ID"] = subject, message_id
     message.set_content(body)
+    inserted = store.claim_email(key, docket_id, cfg["EMAIL_TO"], subject, body, message_id)
+    if not inserted:
+        status = store.email_status(key)
+        return f"Skipped existing email ({status}); no duplicate send."
     try:
         if transport:
             transport(message)

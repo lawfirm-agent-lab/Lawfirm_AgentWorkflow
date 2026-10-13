@@ -312,3 +312,27 @@ GitHub 定时任务可能延迟或漏执行，不保证严格每 60 分钟或更
 该工作流；重新启用后，手动检查可用于确认已恢复。
 
 调度规则参考：https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule
+
+
+## 云端邮件衔接（尚未上线）
+
+新增显式入口 `python -m src.main --cloud-email`：从环境变量读取配置，
+抓取并保存后处理持久化 changes；首次基线不产生历史通知。
+已检测变化的邮件筛选不再限制 date_filed 必须为当天，避免跨天漏发。
+邮件引用原始描述及条目/案件链接，明确为规则筛选、未经 AI 或 PDF 分析。
+原有 classify 的日期筛选接口仍保留；变化通知使用 detected_change 模式。
+
+需要 DATABASE_URL、COURTLISTENER_TOKEN，以及 SMTP_HOST、SMTP_PORT、
+SMTP_USERNAME、SMTP_PASSWORD、EMAIL_FROM、EMAIL_TO。由所有者私下配置。
+现有每小时 workflow 仍使用 --cloud-check，没有启用邮件或注入 SMTP 配置。
+--cloud-email 不读取 .env、不导出本地数据，不能与其他运行模式组合。
+
+已 accepted 的同一变化/发件人/收件人组合不会再次发送。
+发送前保存 sending；异常后记录 uncertain，后续运行报告需人工复核，
+不会自动重试这些记录。SMTP 接受不代表收件箱已收到。
+若当前 API 抓取失败但数据库仍可用，仍会处理以前未发送的变化。
+数据库不可用时停止；不在此阶段提供人工重试界面。
+
+首次启用邮件会处理基线建立以来符合规则且从未发送的变化，可能包含旧日期。
+改变发件人或收件人会形成新的去重组合。上线前应先验证测试邮件并检查积压量。
+这一步仅实现本地代码和模拟邮件测试，没有发送真实邮件。
