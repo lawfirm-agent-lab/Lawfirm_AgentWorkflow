@@ -233,3 +233,19 @@ Run workflow。它不会因 push、PR 或定时事件自动运行。
 日志仅输出固定成功/失败消息，不打印 URI、密码或驱动异常详情。
 本地单元测试使用模拟连接，不会访问真实云数据库。原有 Tests 工作流继续
 使用虚构数据和临时 PostgreSQL，不会取得这个 Secret。
+
+
+## 手动初始化云数据库
+
+上传后，在 Actions 中选择 `Initialize cloud database` → Run workflow，
+使用已保存的 `DATABASE_URL` 创建缺少的五张表：`dockets`、`entries`、`runs`、
+`changes`、`email_outbox`。该 workflow 仅支持手动触发，不读取 `.env`，不抓取
+案件、不导入本地数据、不发邮件，也不建立案件基线。
+
+入口为 `python -m src.store.init_database`。缺少连接配置直接失败，不会退回
+SQLite。强制 TLS，保留更严格的证书验证；限定 public schema，并设置语句和锁
+等待超时。账号需要建表权限。复用 Store 的事务建表逻辑，重复运行保留已有表
+及记录；这不是 schema 升级工具，不会修复结构不兼容的已有表。
+
+日志只显示固定成功或失败信息，不输出连接字符串。初始化成功后仍需另行批准
+首次抓取/基线建立。Supabase Data API 应继续保持关闭；这一步不设置 API 权限。

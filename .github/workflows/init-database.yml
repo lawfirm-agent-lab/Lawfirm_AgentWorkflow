@@ -1,0 +1,32 @@
+name: Initialize cloud database
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: initialize-cloud-database
+  cancel-in-progress: false
+
+jobs:
+  initialize:
+    name: Create missing application tables
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install Python dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Initialize tables without inserting case data
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: python -m src.store.init_database
