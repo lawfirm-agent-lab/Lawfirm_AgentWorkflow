@@ -215,3 +215,21 @@ TEST_POSTGRES_PORT=你的临时容器端口 python tests/integration/postgres_ch
 已经运行成功；上传后仍需检查 Actions 页面上的两个 job。
 
 参考：[GitHub PostgreSQL service containers](https://docs.github.com/en/actions/tutorials/use-containerized-services/create-postgresql-service-containers)。
+
+
+## 手动检查云数据库连接
+
+`Check cloud database` 工作流仅支持手动触发。先由所有者在 GitHub repository
+secret 中保存 `DATABASE_URL`，上传代码后在 Actions 中选择该工作流，点击
+Run workflow。它不会因 push、PR 或定时事件自动运行。
+
+该检查调用 `python -m src.store.check_connection`，不读取 `.env`，不实例化会
+自动建表的 `Store`。它只执行只读事务设置、查询超时设置和 `SELECT 1`。
+未指定 sslmode 时强制 require；保留 verify-ca / verify-full；拒绝允许明文的
+模式，并检查客户端到所选数据库端点的 TLS 是否启用。该检查不证明 pooler
+到数据库的链路、建表权限或业务功能；require 也不等于完整证书身份验证。
+
+连接超时 10 秒，查询超时 10 秒，工作流超时 5 分钟。
+日志仅输出固定成功/失败消息，不打印 URI、密码或驱动异常详情。
+本地单元测试使用模拟连接，不会访问真实云数据库。原有 Tests 工作流继续
+使用虚构数据和临时 PostgreSQL，不会取得这个 Secret。
