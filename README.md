@@ -268,3 +268,30 @@ SQLite。强制 TLS，保留更严格的证书验证；限定 public schema，�
 清理失败日志会显示本次唯一测试表名称，供人工检查；没有自动清理其他表的
 逻辑。该检查证明跨连接读写与提交成功，不验证备份、灾难恢复或长期可用性。
 上传后由所有者在 Actions → Check cloud storage → Run workflow 手动运行。
+
+
+## 手动抓取案件并保存云端基线
+
+`Check dockets manually` 工作流仅支持手动运行，没有 schedule。
+所有者需先配置两个 repository Secrets：`DATABASE_URL`（已验证的 Session
+pooler URI）和 `COURTLISTENER_TOKEN`（现有 CourtListener API Token）。
+不要把 Token 或连接字符串提交到仓库。无需 SMTP 或 LLM 密钥。
+
+上传后，在 Actions → Check dockets manually → Run workflow 运行。
+入口 `python -m src.main --cloud-check` 读取 `config.yaml` 中的案件编号，
+当前为 73132799。它不读取 `.env`，必须连接 PostgreSQL，不会退回 SQLite；
+缺少任一 Secret 时在抓取前失败。连接强制 TLS，保留严格证书验证选项。
+
+首次成功的非空快照建立基线，不生成历史新增事件。后续手动运行比较变化，
+将新增/修改及运行统计保存到数据库。失败保留原基线。它不会迁移本地 SQLite
+历史，也不发送邮件、不生成邮件预览、不导出本地 JSON、不下载 PDF 或运行 OCR。
+`--cloud-check` 不能与导入基线或任何邮件选项组合。
+
+日志显示案件编号、run ID、抓取/新增/修改/缺失数量；云模式失败仅记录异常类型
+或 HTTP 状态码，不输出原始异常或凭据。401/403 通常需要检查 Token 或接口权限。
+GitHub job 限时 15 分钟，同一监控组串行运行，不取消正在进行的检查。
+强制终止可能留下 running 记录；自动恢复队列仍未实现。
+
+预期验证：第一次成功显示 baseline established；再次运行且源数据未变化时，
+added 和 modified 均为 0。是否出现真实更新取决于 CourtListener 数据。
+当前本地测试使用模拟 API 和内存 SQLite，不调用真实 CourtListener 或 Supabase。

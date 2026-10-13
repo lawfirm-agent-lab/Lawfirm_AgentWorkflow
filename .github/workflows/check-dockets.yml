@@ -1,0 +1,33 @@
+name: Check dockets manually
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docket-monitor
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: Fetch CourtListener entries into PostgreSQL
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install Python dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Fetch and save without sending email
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          COURTLISTENER_TOKEN: ${{ secrets.COURTLISTENER_TOKEN }}
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: python -m src.main --cloud-check

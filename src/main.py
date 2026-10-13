@@ -22,13 +22,41 @@ def main():
                         help="Import saved JSON for uninitialized dockets; do not call the API")
     parser.add_argument("--email-demo", action="store_true", help="Select up to five recent important historical entries")
     parser.add_argument("--send-email", action="store_true", help="Send digests via configured SMTP; otherwise save previews only")
+    parser.add_argument("--cloud-check", action="store_true",
+                        help="Fetch to required PostgreSQL using environment only; no email or local exports")
     args = parser.parse_args()
+    if args.cloud_check and (args.import_baseline or args.email_demo or args.send_email):
+        parser.error("--cloud-check cannot be combined with baseline import or email options")
     if args.import_baseline and (args.email_demo or args.send_email):
         parser.error("Email options cannot be combined with --import-baseline")
-    load_dotenv(ROOT / ".env")
+    if not args.cloud_check:
+        load_dotenv(ROOT / ".env")
+    database_url = os.environ.get("DATABASE_URL", "").strip() or None
+    if args.cloud_check:
+        if not database_url:
+            print("Missing DATABASE_URL secret; cloud checks cannot use SQLite.")
+            return 1
+        try:
+            from psycopg.conninfo import conninfo_to_dict
+            from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
+            if not database_url.startswith(("postgresql://", "postgres://")):
+                raise ValueError("Invalid database URI")
+            config = conninfo_to_dict(database_url)
+            mode = config.get("sslmode", "require")
+            if mode not in ("require", "verify-ca", "verify-full"):
+                raise ValueError("TLS required")
+            parts = urlsplit(database_url)
+            query = dict(parse_qsl(parts.query, keep_blank_values=True))
+            query["sslmode"] = mode
+            query["options"] = "-c statement_timeout=30000 -c lock_timeout=10000 -c search_path=public"
+            database_url = urlunsplit(parts._replace(query=urlencode(query)))
+        except Exception:
+            print("Invalid cloud database configuration; use a PostgreSQL URI with TLS and install requirements.txt.")
+            return 1
     token = os.environ.get("COURTLISTENER_TOKEN", "").strip()
     if not args.import_baseline and not token:
-        print("Missing COURTLISTENER_TOKEN; fill .env locally.")
+        print("Missing COURTLISTENER_TOKEN; configure the repository secret." if args.cloud_check
+              else "Missing COURTLISTENER_TOKEN; fill .env locally.")
         return 1
     try:
         config = yaml.safe_load((ROOT / "config.yaml").read_text(encoding="utf-8"))
@@ -38,7 +66,8 @@ def main():
     except (OSError, ValueError, yaml.YAMLError) as exc:
         print(f"Configuration error: {exc}")
         return 1
-    (ROOT / "data").mkdir(exist_ok=True)
+    if not args.cloud_check:
+        (ROOT / "data").mkdir(exist_ok=True)
     try:
         email_config = settings() if args.send_email else None
     except ValueError as exc:
@@ -46,7 +75,7 @@ def main():
         return 1
     try:
         store = Store(ROOT / "data/docket.db",
-                      database_url=os.environ.get("DATABASE_URL", "").strip() or None)
+                      database_url=database_url)
     except StoreError as exc:
         print(exc)
         return 1
@@ -65,6 +94,9 @@ def main():
                 failed = True
                 # Avoid persisting credentials if a downstream exception includes them.
                 error = str(exc).replace(token, "[REDACTED]") if token else str(exc)
+                if args.cloud_check:
+                    status = getattr(getattr(exc, "response", None), "status_code", None)
+                    error = f"HTTP {status}" if isinstance(status, int) else type(exc).__name__
                 store.fail(run_id, error)
                 print(f"Docket {docket_id}: check failed: {error}. Baseline retained.")
                 continue
@@ -72,14 +104,14 @@ def main():
             print(f"Docket {docket_id}: {label}; fetched={result['fetched']}, added={result['added']}, modified={result['modified']}, missing={result['missing']}; run={run_id}")
             if result["missing"]:
                 print("Warning: previously seen entries are missing from this response; stored entries retained.")
-            if not args.import_baseline:
+            if not args.import_baseline and not args.cloud_check:
                 try:
                     temporary = output.with_suffix(".json.tmp")
                     temporary.write_text(json.dumps(rows, indent=2, ensure_ascii=False), encoding="utf-8")
                     temporary.replace(output)
                 except OSError as exc:
                     print(f"JSON export warning: {exc}. Database check results are already saved.")
-            if not args.import_baseline:
+            if not args.import_baseline and not args.cloud_check:
                 # Historical demo is deliberately separate from the change notification queue.
                 if args.email_demo:
                     batches = [(f"demo-v1:{docket_id}", rows)]
