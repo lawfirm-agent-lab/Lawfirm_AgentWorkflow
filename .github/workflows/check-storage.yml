@@ -1,0 +1,32 @@
+name: Check cloud storage
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: check-cloud-storage
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: Write, reconnect, read and clean up synthetic data
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install Python dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Verify storage using an isolated probe table
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: python -m src.store.check_storage
