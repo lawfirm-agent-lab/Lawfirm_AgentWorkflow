@@ -301,7 +301,7 @@ added 和 modified 均为 0。是否出现真实更新取决于 CourtListener �
 ### 每小时检查的额度与运行边界
 
 仅案件抓取工作流增加定时触发；Tests、数据库初始化和连接/读写检查的触发方式
-保持原样。没有启用邮件、PDF 下载、OCR 或 LLM。
+保持原样。每小时任务现已配置邮件模式；PDF 下载、OCR 和 LLM 尚未接入。
 GitHub 定时任务可能延迟或漏执行，不保证严格每 60 分钟或更新后 60 分钟内通知。
 
 按 31 天、单个 job 计算，每月计划 744 次。若每次计费 1 分钟，约 744 分钟；
@@ -314,7 +314,7 @@ GitHub 定时任务可能延迟或漏执行，不保证严格每 60 分钟或更
 调度规则参考：https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule
 
 
-## 云端邮件衔接（尚未上线）
+## 云端邮件衔接
 
 新增显式入口 `python -m src.main --cloud-email`：从环境变量读取配置，
 抓取并保存后处理持久化 changes；首次基线不产生历史通知。
@@ -324,7 +324,8 @@ GitHub 定时任务可能延迟或漏执行，不保证严格每 60 分钟或更
 
 需要 DATABASE_URL、COURTLISTENER_TOKEN，以及 SMTP_HOST、SMTP_PORT、
 SMTP_USERNAME、SMTP_PASSWORD、EMAIL_FROM、EMAIL_TO。由所有者私下配置。
-现有每小时 workflow 仍使用 --cloud-check，没有启用邮件或注入 SMTP 配置。
+每小时 workflow 使用 --cloud-email，并从 GitHub repository Secrets 注入全部 SMTP 配置；
+修改上传到默认分支后生效，手动运行也会处理邮件。
 --cloud-email 不读取 .env、不导出本地数据，不能与其他运行模式组合。
 
 已 accepted 的同一变化/发件人/收件人组合不会再次发送。
@@ -336,3 +337,28 @@ SMTP_USERNAME、SMTP_PASSWORD、EMAIL_FROM、EMAIL_TO。由所有者私下配置
 首次启用邮件会处理基线建立以来符合规则且从未发送的变化，可能包含旧日期。
 改变发件人或收件人会形成新的去重组合。上线前应先验证测试邮件并检查积压量。
 这一步仅实现本地代码和模拟邮件测试，没有发送真实邮件。
+
+
+### 每小时邮件配置与启用
+
+上传这次 workflow 修改前，由所有者在 Settings → Secrets and variables →
+Actions 中添加以下六个 repository Secrets。不要把实际值写进代码或聊天：
+
+| Secret 名称 | 值 |
+| --- | --- |
+| SMTP_HOST | 本地验证使用的 SMTP 服务器地址 |
+| SMTP_PORT | 587（STARTTLS）或 465（TLS） |
+| SMTP_USERNAME | 本地验证使用的 SMTP 用户名 |
+| SMTP_PASSWORD | 邮件服务商的 SMTP 凭据/应用密码 |
+| EMAIL_FROM | 单个发件邮箱地址 |
+| EMAIL_TO | 单个收件邮箱地址 |
+
+保留已配置的 DATABASE_URL 和 COURTLISTENER_TOKEN。本 workflow 的 SMTP_HOST
+和 SMTP_PORT 也从 Secrets 读取；如果之前只填在 Variables，需另行添加同名
+Secrets。缺少邮件配置会在抓取前退出，避免在误配置状态下声称检查成功。
+
+每小时第 7 分钟的计划和手动入口保持不变。上传后符合规则的未通知变化会发到
+EMAIL_TO；首次启用可能处理积压变化，无变化时不发送邮件。没有独立的 SMTP
+测试任务。本地发送成功不能代替 GitHub 网络环境的首次投递验证；查看运行日志
+和收件箱确认。发送增加运行时间，继续保持 $0 Actions 预算并关注用量。
+若需立即停止自动及手动邮件，先在 Actions 禁用 Check dockets hourly。

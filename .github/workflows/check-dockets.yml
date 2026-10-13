@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   check:
-    name: Fetch CourtListener entries into PostgreSQL
+    name: Fetch entries and notify important changes
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -27,9 +27,15 @@ jobs:
           cache: pip
       - name: Install Python dependencies
         run: python -m pip install -r requirements.txt
-      - name: Fetch and save without sending email
+      - name: Fetch, save and send pending notifications
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           COURTLISTENER_TOKEN: ${{ secrets.COURTLISTENER_TOKEN }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
           PYTHONDONTWRITEBYTECODE: "1"
-        run: python -m src.main --cloud-check
+        run: python -m src.main --cloud-email
