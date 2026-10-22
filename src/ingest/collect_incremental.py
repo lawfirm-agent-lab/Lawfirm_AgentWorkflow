@@ -123,27 +123,44 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--initialize", action="store_true", help="Initialize at execution time; no historical backfill")
     args = parser.parse_args()
+    stage = "configuration"
     try:
         url = os.environ.get("DATABASE_URL", "").strip()
         token = os.environ.get("COURTLISTENER_TOKEN", "").strip()
-        if not url.startswith(("postgresql://", "postgres://")) or not token:
-            raise ValueError("Missing configuration")
+        if not url:
+            print("FAIL: DATABASE_URL secret is missing or empty.")
+            return 1
+        if not url.startswith(("postgresql://", "postgres://")):
+            print("FAIL: DATABASE_URL must be a PostgreSQL URI.")
+            return 1
+        if not token and not args.initialize:
+            print("FAIL: COURTLISTENER_TOKEN secret is missing or empty.")
+            return 1
         parts = urlsplit(url)
         query = dict(parse_qsl(parts.query))
         if query.get("sslmode", "require") not in ("require", "verify-ca", "verify-full"):
             raise ValueError("TLS required")
         query.update(sslmode=query.get("sslmode", "require"), options="-c statement_timeout=30000 -c lock_timeout=10000 -c search_path=public")
+        stage = "database_connection_or_schema_creation"
+        print("START: Database connection and discovery schema initialization.")
         store = DiscoveryStore(database_url=urlunsplit(parts._replace(query=urlencode(query))))
         try:
+            stage = "collector_lock"
+            print("PASS: Database connection and discovery schema initialization.")
             locked = store.execute("SELECT pg_try_advisory_lock(7313279901) AS locked").fetchone()["locked"]
             if not locked:
-                raise ValueError("Collector already running")
+                print("FAIL: Another collector holds the database lock. Retry after it finishes.")
+                return 1
             if args.initialize:
+                stage = "stream_initialization"
                 store.initialize_streams(utcnow().isoformat())
                 print("Initialized missing streams at execution time. Existing progress retained. No API requests.")
                 return 0
+            stage = "checkpoint_read"
             if store.execute("SELECT COUNT(*) AS n FROM discovery_state").fetchone()["n"] != 2:
-                raise ValueError("Initialize streams first")
+                print("FAIL: Initialize missing streams first using the workflow checkbox.")
+                return 1
+            stage = "collection"
             with requests.Session() as session:
                 session.headers.update({"Authorization": "Token "+token, "Accept": "application/json"})
                 report = collect(store, session)
@@ -157,7 +174,7 @@ def main():
         finally:
             store.close()
     except Exception:
-        print("FAIL: Configuration or storage error. Secrets and raw response withheld.")
+        print(f"FAIL: stage={stage}. Secrets and raw response withheld.")
         return 1
 
 

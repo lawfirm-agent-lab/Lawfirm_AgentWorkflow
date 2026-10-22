@@ -52,3 +52,11 @@ Inspect the JSON report: requests <= 4; partial/pause is not full synchronizatio
 - Date: 2026-10-22. Primary agent executed tests/integration/discovery_checks.py with a cached PostgreSQL 16 image and synthetic localhost credentials.
 - Result: 9/9 passed. No live API requests, SMTP calls, or Supabase connections.
 - This verifies local PostgreSQL compatibility, not cloud permissions, connectivity, upstream cursor longevity, or independent QA approval.
+
+## Cloud initialization failure investigation — 2026-10-22
+
+- Owner reported generic initialization failure (exit 1). Root cause is not established; cloud initialization has NOT passed.
+- Added safe stage diagnostics for configuration, database connection/schema creation, locking, and checkpoint initialization. No raw database error or secret is printed.
+- Initialization no longer requires COURTLISTENER_TOKEN because it performs no API requests. Collection still requires it. This removes an unnecessary dependency but is not claimed to explain the observed failure.
+- Three new diagnostic tests plus seven collector tests passed (10 total in this targeted run).
+- Changes are local; deployment and rerun remain pending. No cloud resources were accessed during investigation.
