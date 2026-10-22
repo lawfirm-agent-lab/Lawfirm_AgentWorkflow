@@ -17,7 +17,7 @@ class PostgreSQLCollectorTests(CollectorTests):
     def setUp(self):
         self.store = DiscoveryStore(database_url=URL)
         self.addCleanup(self.store.close)
-        self.store.execute('TRUNCATE discovery_records, discovery_state, discovery_requests, discovery_runs')
+        self.store.execute('TRUNCATE discovery_events, discovery_records, discovery_state, discovery_requests, discovery_runs')
         self.store.execute('UPDATE discovery_control SET blocked_until=0')
         self.store.initialize_streams(START)
         self.t = 1800000000.0
@@ -44,6 +44,17 @@ class PostgreSQLCollectorTests(CollectorTests):
             other.close()
 
 
+from tests.test_discovery_events import EventTests
+
+class PostgreSQLEventTests(EventTests):
+    def setUp(self):
+        self.store = DiscoveryStore(database_url=URL)
+        self.addCleanup(self.store.close)
+        self.store.execute('TRUNCATE discovery_events, discovery_records, discovery_state')
+        self.store.initialize_streams(START)
+
+
 if __name__ == '__main__':
     suite = unittest.defaultTestLoader.loadTestsFromTestCase(PostgreSQLCollectorTests)
+    suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(PostgreSQLEventTests))
     raise SystemExit(not unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful())

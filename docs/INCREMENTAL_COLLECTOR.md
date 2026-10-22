@@ -60,3 +60,22 @@ Inspect the JSON report: requests <= 4; partial/pause is not full synchronizatio
 - Initialization no longer requires COURTLISTENER_TOKEN because it performs no API requests. Collection still requires it. This removes an unnecessary dependency but is not claimed to explain the observed failure.
 - Three new diagnostic tests plus seven collector tests passed (10 total in this targeted run).
 - Changes are local; deployment and rerun remain pending. No cloud resources were accessed during investigation.
+
+## Work performed while awaiting the first closed window — 2026-10-22
+
+- Owner-provided cloud output now confirms database/schema initialization and stream initialization succeeded. No API requests occurred. Actual collection and cross-run cloud resume remain pending.
+- Reviewed notification compatibility: metadata-only discovery is not connected to legacy changes or description-based screening. Wrote NOTIFICATION_INTEGRATION_PLAN.md; no delivery code was enabled.
+- Added four boundary tests: unsafe next-page URL leaves no page writes; daily headroom halts fetching; HTTP 429 persists a pause; unknown quota schema fails closed.
+- Full local unit suite: 82 tests passed. No live API calls, database connections to Supabase, or emails were performed.
+- Independent QA remains pending; these additional tests were authored and run by the primary agent.
+
+## Versioned discovery events — 2026-10-22
+
+- Added discovery_events with immutable metadata snapshots, resource-scoped version hashes, source modification time, observation time and pending_enrichment state.
+- first_seen means first observation by this collector, not a new court filing. metadata_changed does not assert substantive legal change.
+- Events, latest metadata and checkpoint updates share one transaction. Duplicate versions do not create duplicate events.
+- No API fields were changed, no extra requests were added, and existing pending cursors remain compatible.
+- Existing metadata already saved before this feature is not automatically backfilled into events; unchanged replays of such rows do not create events. This prevents unapproved historical notifications but requires an explicit migration decision if historical event recovery is desired.
+- Validation: 87 local unit tests passed; 14 tests passed on disposable local PostgreSQL 16, including 5 event tests for deduplication, immutable versions, resource identity and rollback. Container removed afterward.
+- Primary agent performed these checks; independent QA remains pending. No cloud writes, real API requests, or SMTP delivery occurred.
+- Enrichment, screening, email rendering and delivery remain unimplemented for discovery events. No commit or deployment yet.

@@ -1,7 +1,7 @@
 """Separate incremental state; never interprets a page as a docket snapshot."""
 import hashlib
 import json
-from src.store.db import Store
+from src.store.db import Store, now
 
 
 class DiscoveryStore(Store):
@@ -10,6 +10,7 @@ class DiscoveryStore(Store):
             for sql in (
                 "CREATE TABLE IF NOT EXISTS discovery_state (stream TEXT PRIMARY KEY, start_at TEXT NOT NULL, end_at TEXT, next_url TEXT, last_key TEXT, revision INTEGER NOT NULL DEFAULT 0)",
                 "CREATE TABLE IF NOT EXISTS discovery_records (stream TEXT NOT NULL, record_id TEXT NOT NULL, modified_at TEXT NOT NULL, content_hash TEXT NOT NULL, raw_json TEXT NOT NULL, PRIMARY KEY(stream, record_id))",
+                "CREATE TABLE IF NOT EXISTS discovery_events (event_id TEXT PRIMARY KEY, stream TEXT NOT NULL, record_id TEXT NOT NULL, source_modified_at TEXT NOT NULL, kind TEXT NOT NULL, payload_json TEXT NOT NULL, observed_at TEXT NOT NULL, status TEXT NOT NULL)",
                 "CREATE TABLE IF NOT EXISTS discovery_requests (request_id TEXT PRIMARY KEY, attempted_at DOUBLE PRECISION NOT NULL)",
                 "CREATE TABLE IF NOT EXISTS discovery_control (id INTEGER PRIMARY KEY, blocked_until DOUBLE PRECISION NOT NULL)",
                 "CREATE TABLE IF NOT EXISTS discovery_runs (run_id TEXT PRIMARY KEY, started_at TEXT NOT NULL, finished_at TEXT, status TEXT NOT NULL, details TEXT)",
@@ -51,6 +52,13 @@ class DiscoveryStore(Store):
             for row in rows:
                 raw = json.dumps(row, sort_keys=True, separators=(",", ":"))
                 digest = hashlib.sha256(raw.encode()).hexdigest()
+                old = self.execute("SELECT content_hash FROM discovery_records WHERE stream=? AND record_id=?",
+                                   (state["stream"], str(row["id"]))).fetchone()
+                if old is None or old["content_hash"] != digest:
+                    event_id = hashlib.sha256(json.dumps([state["stream"], str(row["id"]), digest]).encode()).hexdigest()
+                    self.execute("INSERT INTO discovery_events VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(event_id) DO NOTHING",
+                        (event_id, state["stream"], str(row["id"]), row["date_modified"],
+                         "first_seen" if old is None else "metadata_changed", raw, now(), "pending_enrichment"))
                 result = self.execute("INSERT INTO discovery_records VALUES (?,?,?,?,?) ON CONFLICT(stream,record_id) DO UPDATE SET modified_at=excluded.modified_at,content_hash=excluded.content_hash,raw_json=excluded.raw_json WHERE discovery_records.content_hash<>excluded.content_hash",
                     (state["stream"], str(row["id"]), row["date_modified"], digest, raw))
                 changed += result.rowcount
