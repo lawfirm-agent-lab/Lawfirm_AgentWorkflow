@@ -1,0 +1,32 @@
+name: Probe CourtListener discovery
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: courtlistener-discovery-probe
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    name: Inspect API limits and discovery metadata
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install Python dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Probe capabilities without fetching case content
+        env:
+          COURTLISTENER_TOKEN: ${{ secrets.COURTLISTENER_TOKEN }}
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: python -m src.ingest.probe_discovery
