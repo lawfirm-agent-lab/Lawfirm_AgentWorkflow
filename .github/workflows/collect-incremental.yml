@@ -1,0 +1,38 @@
+name: Collect incremental metadata manually
+on:
+  workflow_dispatch:
+    inputs:
+      initialize:
+        description: Initialize missing streams at current time (no API requests)
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: docket-monitor
+  cancel-in-progress: false
+jobs:
+  collect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: python -m pip install -r requirements.txt
+      - name: Save incremental metadata and checkpoints without email
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          COURTLISTENER_TOKEN: ${{ secrets.COURTLISTENER_TOKEN }}
+          INITIALIZE: ${{ inputs.initialize }}
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          if [ "$INITIALIZE" = "true" ]; then
+            python -m src.ingest.collect_incremental --initialize
+          else
+            python -m src.ingest.collect_incremental
+          fi
