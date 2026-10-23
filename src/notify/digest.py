@@ -21,3 +21,4 @@ def build_digest(docket_id, rows, demo=False, today=None, detected_change=False)
                   f"Entry API: https://www.courtlistener.com/api/rest/v4/docket-entries/{row['id']}/",
                   f"Docket: https://www.courtlistener.com/docket/{docket_id}/", ""]
     return subject, "\n".join(lines)
+
