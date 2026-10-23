@@ -1,364 +1,164 @@
 # Docket Agent
 
-第一阶段：通过 CourtListener API 获取指定案件的条目，保存原始 JSON。
-项目按 ingest / store / analyze / notify 分层；目前实现 ingest、SQLite 基线与变化检测、单次运行入口；分析和通知仍为占位文件。
+Docket Agent monitors U.S. federal court dockets on [CourtListener](https://www.courtlistener.com/), detects new and changed docket entries, screens them, and emails a digest to the people subscribed to each case.
 
-## 运行
+Court records change often, and lawyers cannot watch every case all day. The goal is a reliable, auditable alert: what changed, why it was selected, and a link to the source.
+
+> **Status: Milestone 1 (pipeline skeleton) is in progress.** Screening is rule-based. LLM analysis (DeepSeek first, but any provider) arrives in Milestone 2. See [docs/M1.md](docs/M1.md) for scope and acceptance criteria and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how to extend the system.
+
+## How it works
+
+```
+CourtListener ──► Detect ──► Analyze ──► Route ──► Deliver ──► email digest
+                    │           │           │          │
+                    └───────────┴───── PostgreSQL (Supabase) ─────┘
+                       events state machine, cursors, outbox, audit
+```
+
+| Stage | What it does |
+| --- | --- |
+| **Detect** | For each subscribed docket, asks CourtListener only for entries modified since the stored cursor. An unchanged docket costs one request. New or changed content becomes an *event*. |
+| **Analyze** | Scores each event (`high`, `medium`, `low`, `ignore`). M1 uses description rules that look for court orders, judgments and court notices. |
+| **Route** | Matches events to subscribers by docket and minimum importance. |
+| **Deliver** | Sends one plain-text digest per recipient per run, with a disclaimer, the verbatim description and source links. |
+
+Every stage reads and writes the database only, so a stage can fail, be rerun, or later be replaced (for example by an LLM-backed agent) without touching the others.
+
+## Quick start (local)
+
+Requires Python 3.11+.
 
 ```bash
-cd /Users/terrychen/Desktop/Lawfirm_AgentWorkflow
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-# Only create .env if it does not already exist; preserve private local settings.
+# Create .env only if it does not exist; never overwrite private local settings.
 if [ ! -e .env ]; then cp .env.example .env; fi
-# 在本地编辑 .env，填入 COURTLISTENER_TOKEN；不要提交或分享 Token。
-python -m src.main
-```
-
-默认读取 config.yaml 中的 docket 73132799：
-https://www.courtlistener.com/docket/73132799/interactive-games-v-draftkings-inc/
-
-结果保存为 data/73132799_entries.json。只有全部分页获取成功后才替换原快照；失败返回非零退出码，不把失败当作没有更新。首次运行未成功时不会生成快照。
-
-.env 自动加载，已有环境变量优先。LLM_API_KEY 当前未使用。
-401/403 需要检查 Token、接口权限或访问限制，不能假定有 Token 就一定能读取条目。
-
-## 当前边界
-
-- 只读取 CourtListener 已收录的 docket 条目，不获取 PDF 全文。
-- 每次拉取完整快照，与 SQLite 中已保存记录比较；尚未实现 LLM、通知或后台定时运行。
-- check_interval_minutes 只是预留配置，不会启动调度器。
-- PacerMonitor 尚未接入。
-- eval/labeled.jsonl 故意留空，待真实数据获取后手工标注。
-
-官方接口文档：https://wiki.free.law/c/courtlistener/help/api/rest/v4/pacer-data
-
-## 基线与更新检测
-
-先把已有 JSON 导入为基线（不会调用 API，不会产生历史新增通知）：
-
-```bash
-python -m src.main --import-baseline
-python -m src.main
-```
-
-没有基线时，第一次成功抓取自动建立基线。重复导入基线会跳过，不能覆盖已有状态。
-SQLite 数据库位于 `data/docket.db`，它是监控状态的依据；JSON 是供查看的原始快照导出。
-
-- `entries`：每个案件已见条目的最新原始数据和用于比较的关键内容。
-- `changes`：新增或修改记录，含 before_json / after_json 和关联 run_id。
-- `runs`：每次运行的来源、UTC 起止时间、状态、条目数、新增数、修改数、缺失数及错误。
-- `dockets`：每个案件的基线建立时间。
-
-修改比较包括条目描述、提交日期/时间、编号及关联文件描述、可用性、路径、正文和校验值。忽略索引更新时间、返回顺序等变化。缺失只计数并保留原记录，不视为删除。初次空快照拒绝建立基线。
-整个响应获取及校验成功后，SQLite 事务一次提交记录、变化历史和成功状态。失败保留原基线。强制终止可能留下 running 状态，当前不包含调度、重叠任务管理或崩溃恢复。
-
-测试不访问 API，使用独立内存数据库：
-
-```bash
 python -m unittest discover -s tests -v
 ```
 
-## Email demo
-
-Normal email screening now requires date_filed to equal today in America/Los_Angeles and a description beginning with a recognized court order/judgment or explicit court notice. Party motions and proposed orders are excluded. This is deliberately broad and can produce false positives; it is not LLM analysis or legal advice. Messages quote the source description and link to the entry API and docket. PDF text is not fetched.
-
-First generate a historical demo preview (fresh fetch, up to five most recent matching records):
+Try the pipeline against a throwaway SQLite file without network or email:
 
 ```bash
-python -m src.main --email-demo
+python -m src.admin --sqlite data/dev.db add-recipient you@example.com
+python -m src.admin --sqlite data/dev.db subscribe you@example.com 73132799
+python -m src.pipeline.runner --sqlite data/dev.db --stages analyze,route,deliver --dry-run
 ```
 
-Preview files are saved under data/email_*.txt. Fill the SMTP and email variables listed in .env.example into your private .env. Never put real secrets in .env.example.
+Dry-run previews are written to `data/previews/`. The `data/` directory is git-ignored.
 
-```bash
-# Fetch, then send the historical demo to EMAIL_TO:
-python -m src.main --email-demo --send-email
-# Fetch, then send only important detected changes, including unsent older changes:
-python -m src.main --send-email
-```
+## Cloud operation (GitHub Actions + Supabase)
 
-The historical demo is marked as historical, not a new case development. It sends once per docket/sender/recipient. Normal mode sends one email per important change. First-ever baseline creation does not notify historical records. No 15-minute scheduler is installed.
+### 1. Secrets
 
-SQLite email_outbox stores recipient, body, message ID, status and timestamps. Accepted means SMTP accepted the message, not confirmed inbox delivery. Existing outbox entries prevent duplicate attempts. An interrupted/failed SMTP attempt is left as sending/uncertain and must be reviewed manually before retry; this avoids duplicate mail when server acceptance is ambiguous. The demo does not provide automatic delivery retries or bounce handling.
+Add these in **Settings → Secrets and variables → Actions**. Never commit real values.
 
-### Today's court updates
-
-Normal mode sends only detected new/modified records with today's date_filed and conservative court-origin wording. Source metadata does not prove authorship or issuance date; these are candidates for review. This can miss unusual court descriptions and late-arriving filings from previous dates. All entries are still stored and compared; only email selection is date-filtered. --email-demo remains an explicit historical preview option and is not part of the requested normal flow.
-
-## PDF text extraction and OCR
-
-Local extraction is available independently of the monitoring/email command:
-
-```bash
-# macOS
-brew install poppler tesseract
-# Ubuntu / GitHub Actions runner
-sudo apt-get update && sudo apt-get install -y poppler-utils tesseract-ocr tesseract-ocr-eng
-
-python -m src.ingest.pdf /path/to/filing.pdf --output-dir data/ocr
-# Force OCR for mixed image/text pages or an unreliable existing text layer:
-python -m src.ingest.pdf /path/to/filing.pdf --force-ocr --source-url https://example.org/filing.pdf
-```
-
-Requires Python 3.10+ and the external executables `pdfinfo`, `pdftotext`,
-`pdftoppm` (Poppler), and `tesseract`. No additional Python packages are required.
-Default language is English; `--language eng+chi_sim` requires the corresponding
-Tesseract language data to be installed.
-
-Each page first uses native text extraction. Pages with fewer than 40 alphanumeric
-characters fall back to OCR. Rendering targets 300 DPI with the longest dimension
-capped at 5000 pixels. Output is a new directory containing `document.json` and
-`document.txt`; JSON includes the source file, optional reference URL, SHA-256,
-page numbers, extraction method, text and warnings. The reference URL is metadata
-only. Temporary page images are removed automatically. Existing outputs are retained.
-
-Defaults: 50 MiB maximum input, 200 pages, and a 120-second timeout per external
-command. The Python `extract_pdf()` API accepts custom limits; the CLI supports
-`--max-pages`. A failed page aborts extraction with a nonzero exit rather than
-publishing a partial document. Empty pages are flagged for manual review.
-
-OCR text is not verified evidence: recognition can misread dates, names and numbers,
-and native text can omit embedded images. Use `--force-ocr` where appropriate and
-review the source PDF. Layout/table reconstruction and handwriting accuracy are
-not guaranteed. This module does not download CourtListener attachments or modify
-the current email flow; its page-numbered output is ready for a later analysis step.
-
-
-## 云端配置准备（尚未部署）
-
-本地继续使用已有 `.env`；不上传、不复制到仓库或 Actions artifacts。
-`.env.example` 只提供配置变量名和非敏感默认值。现有程序通过环境变量
-读取配置，`load_dotenv` 不覆盖已经设置的环境变量。
-
-计划在 GitHub 私有仓库的 Settings → Secrets and variables → Actions
-中，由项目所有者自行填写以下配置。不要将真实值写进 README、workflow、
-终端命令或日志。
-
-| 变量 | GitHub 配置位置 | 用途与当前状态 |
+| Name | Kind | Purpose |
 | --- | --- | --- |
-| `COURTLISTENER_TOKEN` | Secrets | API 抓取需要，当前已使用 |
-| `SMTP_USERNAME` | Secrets | SMTP 用户名，发送邮件时需要 |
-| `SMTP_PASSWORD` | Secrets | SMTP 凭据，发送邮件时需要 |
-| `EMAIL_FROM` | Secrets | 发件地址，作为私人信息保存 |
-| `EMAIL_TO` | Secrets | 收件地址，作为私人信息保存 |
-| `DATABASE_URL` | Secrets | 可选：PostgreSQL 连接 URL；留空使用本地 SQLite |
-| `LLM_API_KEY` | Secrets | 预留：模型服务密钥，当前未使用 |
-| `SMTP_HOST` | Variables | 非敏感 SMTP 服务器地址 |
-| `SMTP_PORT` | Variables | SMTP 端口，465 或 587 |
+| `DATABASE_URL` | Secret | Supabase PostgreSQL URI (session pooler). TLS is enforced. |
+| `COURTLISTENER_TOKEN` | Secret | CourtListener API token. |
+| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD` | Secrets | Outgoing mail. Port 465 (TLS) or 587 (STARTTLS). |
+| `EMAIL_FROM` | Secret | Sender address. |
+| `EMAIL_TO` | Secret | Legacy workflow only. The pipeline reads recipients from the database. |
+| `ANALYZER` | Variable (optional) | Overrides `pipeline.analyzer` in `config.yaml`. |
+| `LLM_PROVIDER`, `LLM_BASE_URL`, `LLM_MODEL` / `LLM_API_KEY` | Variables / Secret | Milestone 2. See [LLM providers](#llm-providers). |
 
-后续 workflow 需要显式把 Secrets 和 Variables 映射到同名环境变量；
-仅在 GitHub 中保存配置，并不会自动传入 Python 程序。
-案件编号继续放在 `config.yaml`。其中 `check_interval_minutes` 当前仍是
-预留项；未来定时频率由 workflow 的 schedule 配置控制。
+### 2. Recipients and subscriptions
 
-未设置或留空 `DATABASE_URL` 时，存储仍是 `data/docket.db`（SQLite）。设置有效的
-PostgreSQL URL 后，程序使用 PostgreSQL，并在首次连接时创建缺少的表。
-已有 SQLite 数据不会自动迁移；迁移或明确建立新基线需要另行处理。
-当前已提供仅运行测试的 Actions workflow，尚未启用定时监控或接入 LLM。
-
-上传范围为源代码、测试、依赖清单、配置样例、文档和后续工作流。
-本地 `.env`、`.venv`、数据库、原始快照、邮件预览和 OCR 输出不提交；
-不要把整个工作目录打包上传为 artifact。需要保留的历史状态应单独迁移。
-
-
-## SQLite / PostgreSQL 存储后端
-
-安装更新后的 `requirements.txt`，其中包含 `psycopg[binary]`。
-`DATABASE_URL` 接受 `postgresql://` 或 `postgres://` URL；真实连接字符串由
-所有者私下配置，使用数据库提供方要求的 TLS 参数。未安装驱动、URL 无效或
-连接失败都会报错退出，不会静默退回 SQLite。连接超时为 10 秒。
-
-`Store(path)` 保留 SQLite 用法；`Store(database_url=...)` 使用 PostgreSQL。
-两种后端共享基线、变化历史、运行状态和邮件 outbox 逻辑。
-PostgreSQL 使用显式事务、自动生成的 run/change ID 和案件级事务锁；
-SQLite 在事务开始时获取写锁。外部 API 和 SMTP 调用不放在数据库事务内。
-配置连接后首次运行需要建表权限；当前只创建缺少的表，不修改既有表结构，
-也不提供已有数据库的自动迁移或版本升级机制。
-
-数据库错误对用户仅输出固定错误消息，不输出连接 URL 或驱动原始异常。
-SMTP 的 sending/uncertain 状态仍需人工检查，不能保证严格的 exactly-once 投递。
-
-离线测试不读取 `.env`，使用临时 SQLite 和模拟 PostgreSQL 接口；
-模拟测试不能替代真实 PostgreSQL 的 SQL、事务和并发验证。
-
-
-## GitHub Actions 测试工作流
-
-`.github/workflows/tests.yml` 提供两个独立 job：
-
-- 离线测试：Python 3.11，运行 `python -m unittest discover -s tests -v`。
-- PostgreSQL 集成测试：启动临时 PostgreSQL 16 服务，运行
-  `python tests/integration/postgres_checks.py`，验证基线、变化检测、回滚、
-  重连后去重、并发基线建立及并发邮件领取。
-
-上传到 GitHub 后，push、pull_request 或手动 workflow_dispatch 会触发测试。
-该工作流没有 schedule，不调用抓取入口，不发送真实邮件，不需要 GitHub
-Secrets，也不读取 `.env`。邮件使用模拟 transport，测试数据全部为虚构数据。
-权限仅为 contents: read；没有数据或工作目录 artifact 上传步骤。
-每个 job 超时为 10 分钟，服务容器由 GitHub 在 job 结束后清理。
-OCR 单元测试模拟外部命令；此工作流尚不包含真实 OCR 引擎的集成验证。
-
-集成脚本仅接受 `TEST_POSTGRES_PORT`，连接 localhost 上的专用 `lawfirm_test`
-数据库，使用固定测试账号。它会在每项测试前清空该测试库的表，禁止用于
-存放真实数据的数据库。脚本不会读取生产用 `DATABASE_URL`。本地复现时，
-先启动隔离的 PostgreSQL 16 容器（数据库 lawfirm_test、用户 postgres、
-密码 local-test-only），再将容器映射到本机的端口传给脚本：
+Recipient addresses live only in the database and never in the repository or in logs. Manage them from your machine with `DATABASE_URL` in your local `.env`:
 
 ```bash
-TEST_POSTGRES_PORT=你的临时容器端口 python tests/integration/postgres_checks.py
+python -m src.admin --dotenv add-recipient lawyer@example.com --name "A. Lawyer"
+python -m src.admin --dotenv subscribe lawyer@example.com 73132799 --min-importance medium
+python -m src.admin --dotenv list
+python -m src.admin --dotenv unsubscribe lawyer@example.com 73132799
+python -m src.admin --dotenv deactivate-recipient lawyer@example.com
 ```
 
-未提供有效测试端口时脚本直接失败，避免集成测试被悄悄跳过。
-普通 unittest discover 不执行该集成脚本。本地验证不等于 GitHub 托管 runner
-已经运行成功；上传后仍需检查 Actions 页面上的两个 job。
+`--min-importance` defaults to `medium`. With the M1 rules analyzer this means court-origin entries only. Use `low` to receive every change.
 
-参考：[GitHub PostgreSQL service containers](https://docs.github.com/en/actions/tutorials/use-containerized-services/create-postgresql-service-containers)。
+A newly watched docket starts **now**, so its history is never sent. A docket that the legacy workflow already checked resumes from that workflow's last successful run.
 
+### 3. Run
 
-## 手动检查云数据库连接
+**Actions → Run docket pipeline** runs every two hours (`17 */2 * * *`) and can also be started manually. Tick **dry_run** to render digests without sending. The first run creates the new tables automatically through versioned migrations in [sql/migrations/](sql/migrations/).
 
-`Check cloud database` 工作流仅支持手动触发。先由所有者在 GitHub repository
-secret 中保存 `DATABASE_URL`，上传代码后在 Actions 中选择该工作流，点击
-Run workflow。它不会因 push、PR 或定时事件自动运行。
+Each run prints a JSON report and adds it to the job summary: requests used, events detected, analyzed and routed, and digests sent. The job fails (red) when a stage fails or a delivery needs manual review.
 
-该检查调用 `python -m src.store.check_connection`，不读取 `.env`，不实例化会
-自动建表的 `Store`。它只执行只读事务设置、查询超时设置和 `SELECT 1`。
-未指定 sslmode 时强制 require；保留 verify-ca / verify-full；拒绝允许明文的
-模式，并检查客户端到所选数据库端点的 TLS 是否启用。该检查不证明 pooler
-到数据库的链路、建表权限或业务功能；require 也不等于完整证书身份验证。
+### Workflows
 
-连接超时 10 秒，查询超时 10 秒，工作流超时 5 分钟。
-日志仅输出固定成功/失败消息，不打印 URI、密码或驱动异常详情。
-本地单元测试使用模拟连接，不会访问真实云数据库。原有 Tests 工作流继续
-使用虚构数据和临时 PostgreSQL，不会取得这个 Secret。
+| Workflow | Trigger | Purpose |
+| --- | --- | --- |
+| `run-pipeline.yml` | Every 2 h + manual | The M1 pipeline. |
+| `tests.yml` | Push / PR / manual | Offline unit tests plus PostgreSQL 16 integration tests. |
+| `check-dockets.yml` | Manual | **Legacy** single-docket check. Do not run it alongside the pipeline (see below). |
+| `check-database.yml` | Manual | Read-only connection and TLS check. |
+| `check-storage.yml` | Manual | Write, reconnect, read, then clean up a probe table. |
+| `init-database.yml` | Manual | Creates the legacy tables. The pipeline creates its own tables on first run. |
+| `collect-incremental.yml` | Manual | Cross-case metadata collector. **Paused** during M1 to save API quota. |
+| `probe-discovery.yml`, `probe-incremental.yml` | Manual | API capability probes. |
 
+GitHub may delay or skip scheduled runs. In practice runs arrive every few hours, so alerts are not real-time.
 
-## 手动初始化云数据库
+## Configuration
 
-上传后，在 Actions 中选择 `Initialize cloud database` → Run workflow，
-使用已保存的 `DATABASE_URL` 创建缺少的五张表：`dockets`、`entries`、`runs`、
-`changes`、`email_outbox`。该 workflow 仅支持手动触发，不读取 `.env`，不抓取
-案件、不导入本地数据、不发邮件，也不建立案件基线。
+[config.yaml](config.yaml) holds non-secret settings:
 
-入口为 `python -m src.store.init_database`。缺少连接配置直接失败，不会退回
-SQLite。强制 TLS，保留更严格的证书验证；限定 public schema，并设置语句和锁
-等待超时。账号需要建表权限。复用 Store 的事务建表逻辑，重复运行保留已有表
-及记录；这不是 schema 升级工具，不会修复结构不兼容的已有表。
+- `pipeline.analyzer`: `rules` (M1) or `llm` (M2).
+- `pipeline.max_events_per_digest`: the largest number of items in one email. Anything beyond waits for the next run.
+- `pipeline.source_lag_seconds`: skip the most recent minutes, which may still be changing.
+- `courtlistener.*`: request budget. CourtListener allows **5/minute, 50/hour and 125/day** per account on rolling windows. The pipeline keeps a persistent request ledger, waits at least 13 s between requests, caps each run, and keeps headroom for manual tools. An HTTP 429 pauses all requests for 24 hours.
 
-日志只显示固定成功或失败信息，不输出连接字符串。初始化成功后仍需另行批准
-首次抓取/基线建立。Supabase Data API 应继续保持关闭；这一步不设置 API 权限。
+## LLM providers
 
+The model is configuration and never code. Any OpenAI-compatible chat API works through one adapter. That covers DeepSeek, OpenAI, Qwen, Kimi and OpenRouter, plus local Ollama or vLLM:
 
-## 手动验证云端存储读写
+```bash
+LLM_PROVIDER=openai_compatible
+LLM_BASE_URL=https://api.deepseek.com      # or https://api.openai.com/v1, http://localhost:11434/v1 ...
+LLM_MODEL=<model name as the provider spells it>
+LLM_API_KEY=<secret>                        # optional only for localhost
+```
 
-`Check cloud storage` 工作流只允许手动触发，使用 repository secret
-`DATABASE_URL`。入口 `python -m src.store.check_storage` 不读取 `.env`。
-它在 public schema 创建唯一命名的 `_storage_probe_<随机标识>` 普通测试表，
-写入一条虚构记录并提交，关闭写入连接后使用新连接读取核对，最后删除该表，
-并检查表已不存在。使用普通表而非 PostgreSQL TEMP 表，才能跨连接验证提交。
+To add a provider with its own API, register a new adapter in [src/llm/client.py](src/llm/client.py). The LLM analyzer itself is Milestone 2. Selecting `ANALYZER=llm` today validates these settings and then stops with a clear message.
 
-不访问或修改五张业务表，不抓取案件、不发送邮件、不建立基线。
-要求 TLS 及 CREATE/DROP 测试表权限；保留更严格的证书验证设置。
-每个连接超时 10 秒、查询超时 10 秒、锁等待 5 秒。成功必须同时完成读取验证
-和清理确认。失败时只输出固定阶段说明，不输出凭据或原始驱动错误。
+**Data residency:** M1 only handles public court records. Before sending any client-confidential material to a model, check the provider's data handling terms. DeepSeek, for example, states that it stores data in mainland China. Pick the provider per deployment.
 
-连接异常时会尽力清理；强制取消或 runner 被终止可能留下测试表。
-清理失败日志会显示本次唯一测试表名称，供人工检查；没有自动清理其他表的
-逻辑。该检查证明跨连接读写与提交成功，不验证备份、灾难恢复或长期可用性。
-上传后由所有者在 Actions → Check cloud storage → Run workflow 手动运行。
+## Security
 
+- Secrets come from environment variables only. Cloud jobs never read `.env`. Logs never print tokens, connection strings, recipient addresses or raw provider or driver errors.
+- Database connections require TLS and use statement and lock timeouts.
+- **Row Level Security** is enabled on every application table in `public`. Supabase's Data API roles (`anon`, `authenticated`) therefore see nothing, while the owning application role keeps full access. The check reruns at every pipeline start, so tables added later are covered too.
+- CourtListener pagination is only followed on the same host, path and filters. Redirects are refused, so the API token is never forwarded elsewhere.
+- Email uses a persisted outbox. Each digest is attempted at most once. If delivery is uncertain, the digest is marked `needs_review` and never resent automatically.
+- LLM output, when added, will be treated as untrusted: structured JSON only, no tools, and claims checked against the source text.
 
-## 每小时抓取案件并保存云端状态
+## Known limitations
 
-`Check dockets hourly` 工作流每小时 UTC 第 7 分钟计划运行一次（`7 * * * *`），
-同时保留手动入口。上传到默认分支后才会启用；本地修改不会启动云端任务。
-所有者需先配置两个 repository Secrets：`DATABASE_URL`（已验证的 Session
-pooler URI）和 `COURTLISTENER_TOKEN`（现有 CourtListener API Token）。
-不要把 Token 或连接字符串提交到仓库。无需 SMTP 或 LLM 密钥。
+- CourtListener only has what reaches RECAP. Entries can be delayed or missing, so the digest is not a complete or real-time record.
+- Only docket-entry descriptions are screened. PDFs are not read (Milestone 3).
+- Detection compares content (description, dates, numbers, document metadata). Re-indexing alone does not alert. Entries that disappear upstream are kept, not reported.
+- If a run is killed mid-way, it can stay marked `running` in `pipeline_runs`.
+- The legacy workflow and the pipeline share the `entries` table. A legacy run can absorb a change before the pipeline records it, so keep the legacy workflow disabled.
 
-上传后，可在 Actions → Check dockets hourly → Run workflow 手动运行。
-入口 `python -m src.main --cloud-check` 读取 `config.yaml` 中的案件编号，
-当前为 73132799。它不读取 `.env`，必须连接 PostgreSQL，不会退回 SQLite；
-缺少任一 Secret 时在抓取前失败。连接强制 TLS，保留严格证书验证选项。
+## Other tools in this repository
 
-首次成功的非空快照建立基线，不生成历史新增事件。后续手动运行比较变化，
-将新增/修改及运行统计保存到数据库。失败保留原基线。它不会迁移本地 SQLite
-历史，也不发送邮件、不生成邮件预览、不导出本地 JSON、不下载 PDF 或运行 OCR。
-`--cloud-check` 不能与导入基线或任何邮件选项组合。
+- `python -m src.main`: the legacy single-docket check (local snapshot, `--import-baseline`, `--email-demo`, `--send-email`, `--cloud-email`). It is superseded by the pipeline and kept for reference.
+- `python -m src.ingest.pdf file.pdf --output-dir data/ocr`: local PDF text extraction with a per-page Tesseract OCR fallback. It needs Poppler and Tesseract (`brew install poppler tesseract`). Output is page-numbered JSON and text. OCR text is not verified evidence. This tool is planned for Milestone 3.
+- `python -m src.ingest.collect_incremental`: the cross-case metadata collector. See [docs/INCREMENTAL_COLLECTOR.md](docs/INCREMENTAL_COLLECTOR.md).
 
-日志显示案件编号、run ID、抓取/新增/修改/缺失数量；云模式失败仅记录异常类型
-或 HTTP 状态码，不输出原始异常或凭据。401/403 通常需要检查 Token 或接口权限。
-GitHub job 限时 15 分钟，同一监控组串行运行，不取消正在进行的检查。
-强制终止可能留下 running 记录；自动恢复队列仍未实现。
+## Testing
 
-预期验证：第一次成功显示 baseline established；再次运行且源数据未变化时，
-added 和 modified 均为 0。是否出现真实更新取决于 CourtListener 数据。
-当前本地测试使用模拟 API 和内存 SQLite，不调用真实 CourtListener 或 Supabase。
+```bash
+python -m unittest discover -s tests -v                    # offline; no network, SMTP or .env
+TEST_POSTGRES_PORT=<port> python tests/integration/pipeline_checks.py
+```
 
+Integration scripts connect only to a disposable localhost database named `lawfirm_test` (user `postgres`, password `local-test-only`) and **truncate its tables**. Never point them at real data. CI runs them against a PostgreSQL 16 service container.
 
-### 每小时检查的额度与运行边界
+## Documentation
 
-仅案件抓取工作流增加定时触发；Tests、数据库初始化和连接/读写检查的触发方式
-保持原样。每小时任务现已配置邮件模式；PDF 下载、OCR 和 LLM 尚未接入。
-GitHub 定时任务可能延迟或漏执行，不保证严格每 60 分钟或更新后 60 分钟内通知。
-
-按 31 天、单个 job 计算，每月计划 744 次。若每次计费 1 分钟，约 744 分钟；
-若每次计费 2 分钟，约 1,488 分钟。测试、手动重跑和其他仓库会共享账户额度。
-保留 Actions 的 $0 预算及 Stop usage 设置；超额时可能停止运行。
-15 分钟 job 超时只是防止任务无限运行，不保证每次只消耗 1 分钟。
-启用后应在账户 Usage 中核对实际用量。需要暂停时，可在 Actions 页面禁用
-该工作流；重新启用后，手动检查可用于确认已恢复。
-
-调度规则参考：https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule
-
-
-## 云端邮件衔接
-
-新增显式入口 `python -m src.main --cloud-email`：从环境变量读取配置，
-抓取并保存后处理持久化 changes；首次基线不产生历史通知。
-已检测变化的邮件筛选不再限制 date_filed 必须为当天，避免跨天漏发。
-邮件引用原始描述及条目/案件链接，明确为规则筛选、未经 AI 或 PDF 分析。
-原有 classify 的日期筛选接口仍保留；变化通知使用 detected_change 模式。
-
-需要 DATABASE_URL、COURTLISTENER_TOKEN，以及 SMTP_HOST、SMTP_PORT、
-SMTP_USERNAME、SMTP_PASSWORD、EMAIL_FROM、EMAIL_TO。由所有者私下配置。
-每小时 workflow 使用 --cloud-email，并从 GitHub repository Secrets 注入全部 SMTP 配置；
-修改上传到默认分支后生效，手动运行也会处理邮件。
---cloud-email 不读取 .env、不导出本地数据，不能与其他运行模式组合。
-
-已 accepted 的同一变化/发件人/收件人组合不会再次发送。
-发送前保存 sending；异常后记录 uncertain，后续运行报告需人工复核，
-不会自动重试这些记录。SMTP 接受不代表收件箱已收到。
-若当前 API 抓取失败但数据库仍可用，仍会处理以前未发送的变化。
-数据库不可用时停止；不在此阶段提供人工重试界面。
-
-首次启用邮件会处理基线建立以来符合规则且从未发送的变化，可能包含旧日期。
-改变发件人或收件人会形成新的去重组合。上线前应先验证测试邮件并检查积压量。
-这一步仅实现本地代码和模拟邮件测试，没有发送真实邮件。
-
-
-### 每小时邮件配置与启用
-
-上传这次 workflow 修改前，由所有者在 Settings → Secrets and variables →
-Actions 中添加以下六个 repository Secrets。不要把实际值写进代码或聊天：
-
-| Secret 名称 | 值 |
-| --- | --- |
-| SMTP_HOST | 本地验证使用的 SMTP 服务器地址 |
-| SMTP_PORT | 587（STARTTLS）或 465（TLS） |
-| SMTP_USERNAME | 本地验证使用的 SMTP 用户名 |
-| SMTP_PASSWORD | 邮件服务商的 SMTP 凭据/应用密码 |
-| EMAIL_FROM | 单个发件邮箱地址 |
-| EMAIL_TO | 单个收件邮箱地址 |
-
-保留已配置的 DATABASE_URL 和 COURTLISTENER_TOKEN。本 workflow 的 SMTP_HOST
-和 SMTP_PORT 也从 Secrets 读取；如果之前只填在 Variables，需另行添加同名
-Secrets。缺少邮件配置会在抓取前退出，避免在误配置状态下声称检查成功。
-
-每小时第 7 分钟的计划和手动入口保持不变。上传后符合规则的未通知变化会发到
-EMAIL_TO；首次启用可能处理积压变化，无变化时不发送邮件。没有独立的 SMTP
-测试任务。本地发送成功不能代替 GitHub 网络环境的首次投递验证；查看运行日志
-和收件箱确认。发送增加运行时间，继续保持 $0 Actions 预算并关注用量。
-若需立即停止自动及手动邮件，先在 Actions 禁用 Check dockets hourly。
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): stages, data model, extension points
+- [docs/M1.md](docs/M1.md): Milestone 1 scope, status and deployment checklist
+- [docs/NOTIFICATION_INTEGRATION_PLAN.md](docs/NOTIFICATION_INTEGRATION_PLAN.md), [docs/INCREMENTAL_COLLECTOR.md](docs/INCREMENTAL_COLLECTOR.md), [docs/DISCOVERY_PROBE.md](docs/DISCOVERY_PROBE.md): cross-case collector history
+- CourtListener API: <https://wiki.free.law/c/courtlistener/help/api/rest/v4/rest-api-v47>
