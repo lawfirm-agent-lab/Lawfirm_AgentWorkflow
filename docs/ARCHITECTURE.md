@@ -59,6 +59,7 @@ Created by [sql/migrations/](../sql/migrations/) on first connection, applied on
 | `api_requests`, `api_control` | Persistent request ledger and throttle pause, per API |
 | `pipeline_runs` | Run history and reports |
 | `docket_info` | Case name, number, court and page path for digests, fetched once per docket |
+| `court_info` | Court citation (e.g. S.D.N.Y.) and full name, fetched once per court |
 
 The legacy tables (`dockets`, `entries`, `runs`, `changes`, `email_outbox`) are kept. `entries` is the comparison baseline. `email_outbox` provides once-only delivery.
 
@@ -67,7 +68,7 @@ The legacy tables (`dockets`, `entries`, `runs`, `changes`, `email_outbox`) are 
 ## Extension points
 
 ### New data source
-Implement `Source.fetch_docket_changes(docket_id, since, until) -> SourceResult` and `fetch_docket_info(docket_id)` (see [src/sources/courtlistener.py](../src/sources/courtlistener.py)). Draw every request from a `RequestBudget` with its own `api` name. Raise on invalid data rather than skipping it. Webhooks (M4) will write to the same `events` table.
+Implement `Source.fetch_docket_changes(docket_id, since, until) -> SourceResult` plus `fetch_docket_info(docket_id)` and `fetch_court_info(court_id)` (see [src/sources/courtlistener.py](../src/sources/courtlistener.py)). Draw every request from a `RequestBudget` with its own `api` name. Raise on invalid data rather than skipping it. Webhooks (M4) will write to the same `events` table.
 
 ### New analyzer
 Implement `Analyzer.analyze(event) -> Analysis` and register it in [src/analyzers/registry.py](../src/analyzers/registry.py). Return the shared `Analysis` shape (`importance`, `category`, `summary`, `reasons`, `details`), and bump `version` whenever behaviour changes. Raise on failure: the stage records only the exception type and retries up to three times.

@@ -3,6 +3,7 @@
 One query per docket asks only for entries modified since the stored cursor, so an
 unchanged docket costs a single request instead of a full snapshot.
 """
+import re
 from datetime import timezone
 from urllib.parse import parse_qs, urlsplit
 
@@ -12,6 +13,8 @@ from src.ingest.probe_incremental import timestamp
 HOST = "www.courtlistener.com"
 PATH = "/api/rest/v4/docket-entries/"
 DOCKETS = "https://" + HOST + "/api/rest/v4/dockets/{}/"
+COURTS = "https://" + HOST + "/api/rest/v4/courts/{}/"
+COURT_ID = re.compile(r"[a-z0-9]{1,15}")
 
 
 class SourceError(RuntimeError):
@@ -24,6 +27,11 @@ class QuotaExhausted(SourceError):
 
 def utc(value):
     return timestamp(value).astimezone(timezone.utc).isoformat()
+
+
+def clean(data, key):
+    value = data.get(key)
+    return " ".join(value.split()) if isinstance(value, str) and value.strip() else None
 
 
 def check_next(url, params):
@@ -47,13 +55,25 @@ class CourtListenerSource:
         data = self._get(DOCKETS.format(docket_id), None, envelope=False)
         if data.get("id") != docket_id:
             raise SourceError("Docket response does not match the requested docket")
-        text = lambda key: data[key].strip() if isinstance(data.get(key), str) and data[key].strip() else None
+        text = lambda key: clean(data, key)
         path = text("absolute_url")
         if path and not path.startswith(f"/docket/{docket_id}/"):
             path = None  # Only trust page paths for this docket on this host.
+        court_id = text("court_id")
+        court_id = court_id if court_id and COURT_ID.fullmatch(court_id) else None
         return {"case_name": text("case_name") or text("case_name_short"), "docket_number": text("docket_number"),
-                "court": text("court_citation_string") or (text("court_id") or "").upper() or None,
-                "absolute_url": path}
+                "court": text("court_citation_string") or (court_id or "").upper() or None,
+                "court_id": court_id, "absolute_url": path}
+
+    def fetch_court_info(self, court_id):
+        """Display names for one court, e.g. citation 'S.D.N.Y.'. One request per court."""
+        if not COURT_ID.fullmatch(court_id or ""):
+            raise SourceError("Invalid court identifier")
+        data = self._get(COURTS.format(court_id), None, envelope=False)
+        if data.get("id") != court_id:
+            raise SourceError("Court response does not match the requested court")
+        return {"citation": clean(data, "citation_string") or clean(data, "short_name"),
+                "full_name": clean(data, "full_name")}
 
     def _get(self, url, params, envelope=True):
         if not self.budget.acquire():

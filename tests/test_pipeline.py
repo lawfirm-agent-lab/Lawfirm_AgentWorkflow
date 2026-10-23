@@ -31,12 +31,16 @@ class FakeSource:
     name = "courtlistener"
 
     def __init__(self):
-        self.pages, self.calls, self.info_calls = {}, [], []
+        self.pages, self.calls, self.info_calls, self.court_calls = {}, [], [], []
 
     def fetch_docket_info(self, docket_id):
         self.info_calls.append(docket_id)
-        return {"case_name": f"Case {docket_id}", "docket_number": "1:25-cv-00001", "court": "S.D.N.Y.",
-                "absolute_url": f"/docket/{docket_id}/case/"}
+        return {"case_name": f"Case {docket_id}", "docket_number": "1:25-cv-00001", "court": "NYSD",
+                "court_id": "nysd", "absolute_url": f"/docket/{docket_id}/case/"}
+
+    def fetch_court_info(self, court_id):
+        self.court_calls.append(court_id)
+        return {"citation": "S.D.N.Y.", "full_name": "District Court, S.D. New York"}
 
     def fetch_docket_changes(self, docket_id, since, until):
         self.calls.append((docket_id, since, until))
@@ -131,8 +135,9 @@ class PipelineTests(unittest.TestCase):
         self.start_watch()
         self.run_all(stages=("detect",))
         self.run_all(NOW + timedelta(hours=2), stages=("detect",))
-        self.assertEqual(self.source.info_calls, [DOCKET])
+        self.assertEqual((self.source.info_calls, self.source.court_calls), ([DOCKET], ["nysd"]))
         subscribe(self.store, "lawyer@example.com", 2)
+        self.source.fetch_court_info = lambda court_id: self.fail("court already cached")
         self.source.fetch_docket_info = lambda docket_id: (_ for _ in ()).throw(SourceError("HTTP 404"))
         report, _ = self.run_all(NOW + timedelta(hours=4), stages=("detect",))
         self.assertEqual(report["info_failed"], [{"docket_id": 2, "error": "HTTP 404"}])
@@ -264,6 +269,22 @@ class PipelineTests(unittest.TestCase):
 
 
 class MigrationTests(unittest.TestCase):
+    def test_court_migration_backfills_existing_rows(self):
+        import shutil
+        import tempfile
+        from pathlib import Path
+        from src.store.migrate import MIGRATIONS, apply_migrations
+        store = Store(":memory:")
+        self.addCleanup(store.close)
+        with tempfile.TemporaryDirectory() as directory:
+            for name in ("001_pipeline.sql", "002_docket_info.sql"):
+                shutil.copy(MIGRATIONS / name, Path(directory) / name)
+            apply_migrations(store, directory)
+        with store.transaction():
+            store.execute("INSERT INTO docket_info VALUES (1,'A v. B','1:26-cv-1','NYSD','/docket/1/a/','t')")
+        self.assertEqual(apply_migrations(store), ["003_court_info"])
+        self.assertEqual(store.execute("SELECT court_id FROM docket_info").fetchone()["court_id"], "nysd")
+
     def test_reopen_is_idempotent_and_keeps_legacy_data(self):
         import tempfile
         from pathlib import Path
@@ -275,7 +296,7 @@ class MigrationTests(unittest.TestCase):
             for _ in range(2):
                 store = PipelineStore(path)
                 versions = [r["version"] for r in store.execute("SELECT version FROM schema_migrations")]
-                self.assertEqual(versions, ["001_pipeline", "002_docket_info"])
+                self.assertEqual(versions, ["001_pipeline", "002_docket_info", "003_court_info"])
                 self.assertEqual(store.execute("SELECT COUNT(*) AS n FROM entries").fetchone()["n"], 1)
                 store.close()
 

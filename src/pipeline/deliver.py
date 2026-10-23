@@ -17,8 +17,10 @@ def pending(store, recipient_id, limit):
 
 
 def docket_info(store, docket_ids):
-    rows = [store.execute("SELECT * FROM docket_info WHERE docket_id=?", (d,)).fetchone() for d in docket_ids]
-    return {row["docket_id"]: dict(row) for row in rows if row}
+    """Display metadata per docket; the court's citation (e.g. S.D.N.Y.) replaces its raw identifier."""
+    rows = [store.execute("SELECT d.*, c.citation FROM docket_info d LEFT JOIN court_info c ON c.court_id=d.court_id "
+                          "WHERE d.docket_id=?", (d,)).fetchone() for d in docket_ids]
+    return {row["docket_id"]: {**dict(row), "court": row["citation"] or row["court"]} for row in rows if row}
 
 
 def deliver(store, notifier, settings, dry_run=False, preview_dir=None):

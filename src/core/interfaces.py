@@ -15,7 +15,10 @@ class Source(Protocol):
         """Return entries modified in [since, until), oldest first. Raise on failure; never guess."""
 
     def fetch_docket_info(self, docket_id: int) -> dict:
-        """Return display metadata: case_name, docket_number, court, absolute_url (any may be None)."""
+        """Return display metadata: case_name, docket_number, court, court_id, absolute_url (any may be None)."""
+
+    def fetch_court_info(self, court_id: str) -> dict:
+        """Return court display names: citation (e.g. 'S.D.N.Y.') and full_name (either may be None)."""
 
 
 class Analyzer(Protocol):
