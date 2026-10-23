@@ -20,7 +20,7 @@ CourtListener ──► Detect ──► Analyze ──► Route ──► Deliv
 | **Detect** | For each subscribed docket, asks CourtListener only for entries modified since the stored cursor. An unchanged docket costs one request. New or changed content becomes an *event*. |
 | **Analyze** | Scores each event (`high`, `medium`, `low`, `ignore`). M1 uses description rules that look for court orders, judgments and court notices. |
 | **Route** | Matches events to subscribers by docket and minimum importance. |
-| **Deliver** | Sends one plain-text digest per recipient per run, with a disclaimer, the verbatim description and source links. |
+| **Deliver** | Sends one digest per recipient per run (HTML with a plain-text fallback). Court orders come first, grouped by case name and number, with the verbatim description and links to the entry and its PDF. Other activity follows on one line each. |
 
 Every stage reads and writes the database only, so a stage can fail, be rerun, or later be replaced (for example by an LLM-backed agent) without touching the others.
 
@@ -45,7 +45,7 @@ python -m src.admin --sqlite data/dev.db subscribe you@example.com 73132799
 python -m src.pipeline.runner --sqlite data/dev.db --stages analyze,route,deliver --dry-run
 ```
 
-Dry-run previews are written to `data/previews/`. The `data/` directory is git-ignored.
+Dry-run previews (`.txt` and `.html`) are written to `data/previews/`. The `data/` directory is git-ignored.
 
 ## Cloud operation (GitHub Actions + Supabase)
 

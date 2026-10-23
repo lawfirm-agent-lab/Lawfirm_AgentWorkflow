@@ -12,7 +12,7 @@ class EmailNotifier:
         self.store, self.cfg = store, cfg
         self.transport = transport or (lambda message: smtp_send(cfg, message))
 
-    def send(self, recipient, subject, body, key):
+    def send(self, recipient, subject, body, key, html=None):
         message_id = make_msgid()
         if not self.store.claim_email(key, None, recipient, subject, body, message_id):
             # Already attempted: never resend. Only a confirmed acceptance counts as sent.
@@ -21,6 +21,8 @@ class EmailNotifier:
         message["From"], message["To"] = self.cfg["EMAIL_FROM"], recipient
         message["Subject"], message["Message-ID"] = subject, message_id
         message.set_content(body)
+        if html:
+            message.add_alternative(html, subtype="html")
         try:
             self.transport(message)
         except Exception as exc:

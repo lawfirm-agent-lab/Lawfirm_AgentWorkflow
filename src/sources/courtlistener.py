@@ -11,6 +11,7 @@ from src.ingest.probe_incremental import timestamp
 
 HOST = "www.courtlistener.com"
 PATH = "/api/rest/v4/docket-entries/"
+DOCKETS = "https://" + HOST + "/api/rest/v4/dockets/{}/"
 
 
 class SourceError(RuntimeError):
@@ -41,7 +42,20 @@ class CourtListenerSource:
     def __init__(self, session, budget, max_pages=5):
         self.session, self.budget, self.max_pages = session, budget, max_pages
 
-    def _get(self, url, params):
+    def fetch_docket_info(self, docket_id):
+        """Case name, number, court and page path for display. One request per docket."""
+        data = self._get(DOCKETS.format(docket_id), None, envelope=False)
+        if data.get("id") != docket_id:
+            raise SourceError("Docket response does not match the requested docket")
+        text = lambda key: data[key].strip() if isinstance(data.get(key), str) and data[key].strip() else None
+        path = text("absolute_url")
+        if path and not path.startswith(f"/docket/{docket_id}/"):
+            path = None  # Only trust page paths for this docket on this host.
+        return {"case_name": text("case_name") or text("case_name_short"), "docket_number": text("docket_number"),
+                "court": text("court_citation_string") or (text("court_id") or "").upper() or None,
+                "absolute_url": path}
+
+    def _get(self, url, params, envelope=True):
         if not self.budget.acquire():
             raise QuotaExhausted("Request budget exhausted or paused")
         response = self.session.get(url, params=params, timeout=(10, 30), allow_redirects=False)
@@ -54,6 +68,10 @@ class CourtListenerSource:
             data = response.json()
         except ValueError:
             raise SourceError("Response is not JSON") from None
+        if not envelope:
+            if not isinstance(data, dict):
+                raise SourceError("Invalid response")
+            return data
         if not isinstance(data, dict) or not isinstance(data.get("results"), list) or "next" not in data:
             raise SourceError("Invalid pagination envelope")
         if data["next"] is not None and (not isinstance(data["next"], str) or not data["next"]):

@@ -73,9 +73,30 @@ def record_error(store, docket_id, error, now):
                       (now.isoformat(), error, docket_id))
 
 
+def fetch_missing_info(store, source, watches, now, report):
+    """Display metadata is fetched once per docket, after change detection, from leftover budget."""
+    for watch in watches:
+        docket_id = watch["docket_id"]
+        if store.execute("SELECT 1 FROM docket_info WHERE docket_id=?", (docket_id,)).fetchone():
+            continue
+        try:
+            info = source.fetch_docket_info(docket_id)
+        except QuotaExhausted:
+            return
+        except SourceError as exc:
+            report["info_failed"].append({"docket_id": docket_id, "error": str(exc)})
+            continue
+        with store.transaction():
+            store.execute("INSERT INTO docket_info VALUES (?,?,?,?,?,?) ON CONFLICT(docket_id) DO NOTHING",
+                          (docket_id, info["case_name"], info["docket_number"], info["court"], info["absolute_url"],
+                           now.isoformat()))
+        report["info_fetched"] += 1
+
+
 def detect(store, source, settings, now):
     until = now - timedelta(seconds=settings.source_lag_seconds)
-    report = {"dockets": 0, "events": 0, "partial": [], "failed": [], "quota_stopped": False}
+    report = {"dockets": 0, "events": 0, "partial": [], "failed": [], "quota_stopped": False,
+              "info_fetched": 0, "info_failed": []}
     with store.transaction():
         watches = [ensure_watch(store, d, now) for d in watched_dockets(store)]
     # Least recently checked first, so a tight budget rotates fairly across dockets.
@@ -97,4 +118,6 @@ def detect(store, source, settings, now):
         report["dockets"] += 1
         if not result.complete:
             report["partial"].append(watch["docket_id"])
+    if not report["quota_stopped"]:
+        fetch_missing_info(store, source, watches, now, report)
     return report

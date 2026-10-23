@@ -14,6 +14,9 @@ class Source(Protocol):
     def fetch_docket_changes(self, docket_id: int, since: str, until: str) -> SourceResult:
         """Return entries modified in [since, until), oldest first. Raise on failure; never guess."""
 
+    def fetch_docket_info(self, docket_id: int) -> dict:
+        """Return display metadata: case_name, docket_number, court, absolute_url (any may be None)."""
+
 
 class Analyzer(Protocol):
     name: str
@@ -26,8 +29,9 @@ class Analyzer(Protocol):
 class Notifier(Protocol):
     name: str
 
-    def send(self, recipient: str, subject: str, body: str, key: str) -> str:
-        """Deliver once per key. Return 'sent', or 'needs_review' when delivery is uncertain."""
+    def send(self, recipient: str, subject: str, body: str, key: str, html: str | None = None) -> str:
+        """Deliver once per key. body is plain text; html is an optional rich alternative.
+        Return 'sent', or 'needs_review' when delivery is uncertain."""
 
 
 class LLMClient(Protocol):

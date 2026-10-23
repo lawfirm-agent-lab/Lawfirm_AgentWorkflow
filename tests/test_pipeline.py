@@ -10,12 +10,16 @@ from src.core.models import SourceResult
 from src.notifiers.email import EmailNotifier
 from src.pipeline import detect as detect_module
 from src.pipeline.runner import run
-from src.sources.courtlistener import QuotaExhausted
+from src.sources.courtlistener import QuotaExhausted, SourceError
 from src.store.db import Store
 from src.store.pipeline import PipelineStore
 
 NOW = datetime(2026, 10, 23, 12, tzinfo=timezone.utc)
 DOCKET = 73132799
+
+
+def text(message):
+    return message.get_body(("plain",)).get_content()
 
 
 def entry(i, description="ORDER setting hearing.", docket=DOCKET, modified="2026-10-23T11:00:00+00:00"):
@@ -27,7 +31,12 @@ class FakeSource:
     name = "courtlistener"
 
     def __init__(self):
-        self.pages, self.calls = {}, []
+        self.pages, self.calls, self.info_calls = {}, [], []
+
+    def fetch_docket_info(self, docket_id):
+        self.info_calls.append(docket_id)
+        return {"case_name": f"Case {docket_id}", "docket_number": "1:25-cv-00001", "court": "S.D.N.Y.",
+                "absolute_url": f"/docket/{docket_id}/case/"}
 
     def fetch_docket_changes(self, docket_id, since, until):
         self.calls.append((docket_id, since, until))
@@ -101,18 +110,33 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(len(self.sent), 1)
         message = self.sent[0]
         self.assertEqual(message["To"], "lawyer@example.com")
-        self.assertIn("2 items across 1 case", message["Subject"])
-        body = message.get_content()
+        self.assertTrue(message["Subject"].startswith(f"[2 court orders] Case {DOCKET} — Oct 23"))
+        body = text(message)
         self.assertIn("ORDER amended.", body)
-        self.assertIn("docket-entries/2/", body)
+        self.assertIn("UPDATED · description changed", body)
+        self.assertIn(f"https://www.courtlistener.com/docket/{DOCKET}/case/?entry_gte=2&entry_lte=2", body)
+        self.assertIn("1:25-cv-00001 · S.D.N.Y.", body)
         self.assertNotIn("MOTION to dismiss", body)
         self.assertIn("Not legal advice", body)
+        self.assertIn("ORDER amended.", message.get_body(("html",)).get_content())
+        self.assertEqual(self.source.info_calls, [DOCKET])
         # Replaying the same page and rerunning creates no events and sends nothing new.
         detected, report = self.run_all(NOW + timedelta(hours=2))
         self.assertEqual(detected["events"], 0)
         self.assertEqual(report["stages"]["deliver"]["digests"], 0)
         self.assertEqual(len(self.sent), 1)
         self.assertEqual(self.count("notifications", "status='sent'"), 2)
+
+    def test_docket_info_fetched_once_and_failures_are_soft(self):
+        self.start_watch()
+        self.run_all(stages=("detect",))
+        self.run_all(NOW + timedelta(hours=2), stages=("detect",))
+        self.assertEqual(self.source.info_calls, [DOCKET])
+        subscribe(self.store, "lawyer@example.com", 2)
+        self.source.fetch_docket_info = lambda docket_id: (_ for _ in ()).throw(SourceError("HTTP 404"))
+        report, _ = self.run_all(NOW + timedelta(hours=4), stages=("detect",))
+        self.assertEqual(report["info_failed"], [{"docket_id": 2, "error": "HTTP 404"}])
+        self.assertEqual(report["failed"], [])
 
     def test_cursor_advances_only_after_commit(self):
         self.start_watch()
@@ -176,8 +200,11 @@ class PipelineTests(unittest.TestCase):
         self.source.pages[DOCKET] = [entry(1), entry(2, "Certificate of service.")]
         self.run_all()
         self.assertEqual(sorted(m["To"] for m in self.sent), ["all@example.com", "lawyer@example.com"])
-        counts = {m["To"]: m.get_content().count("Entry API:") for m in self.sent}
+        counts = {m["To"]: text(m).count("entry_gte=") for m in self.sent}
         self.assertEqual(counts, {"all@example.com": 2, "lawyer@example.com": 1})
+        by_recipient = {m["To"]: text(m) for m in self.sent}
+        self.assertIn("OTHER ACTIVITY", by_recipient["all@example.com"])
+        self.assertNotIn("OTHER ACTIVITY", by_recipient["lawyer@example.com"])
 
     def test_uncertain_delivery_is_never_retried(self):
         self.start_watch()
@@ -248,7 +275,7 @@ class MigrationTests(unittest.TestCase):
             for _ in range(2):
                 store = PipelineStore(path)
                 versions = [r["version"] for r in store.execute("SELECT version FROM schema_migrations")]
-                self.assertEqual(versions, ["001_pipeline"])
+                self.assertEqual(versions, ["001_pipeline", "002_docket_info"])
                 self.assertEqual(store.execute("SELECT COUNT(*) AS n FROM entries").fetchone()["n"], 1)
                 store.close()
 

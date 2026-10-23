@@ -22,28 +22,3 @@ def build_digest(docket_id, rows, demo=False, today=None, detected_change=False)
                   f"Docket: https://www.courtlistener.com/docket/{docket_id}/", ""]
     return subject, "\n".join(lines)
 
-
-DISCLAIMER = ("Automated screening of CourtListener docket descriptions. Not legal advice. "
-              "PDFs have not been reviewed. CourtListener data can be delayed or incomplete. "
-              "Verify every item against the source before acting.")
-
-
-def render_digest(items):
-    """items: [(Event, Analysis)] for one recipient. Returns (subject, plain-text body)."""
-    dockets = sorted({event.docket_id for event, _ in items})
-    count = len(items)
-    subject = f"Court docket updates: {count} item{'s' * (count != 1)} across {len(dockets)} case{'s' * (len(dockets) != 1)}"
-    lines = [subject, "", DISCLAIMER, ""]
-    for docket_id in dockets:
-        lines += [f"== Docket {docket_id}: https://www.courtlistener.com/docket/{docket_id}/", ""]
-        for event, analysis in sorted((i for i in items if i[0].docket_id == docket_id), key=lambda i: i[0].entry_id):
-            row = event.payload
-            label = "New entry" if event.kind == "added" else "Updated entry"
-            lines += [f"Entry #{row.get('entry_number')} | Filed: {row.get('date_filed')} | {label} | Importance: {analysis.importance}"]
-            if analysis.summary:
-                lines.append("Summary: " + analysis.summary)
-            if analysis.reasons:
-                lines.append("Why selected: " + "; ".join(analysis.reasons))
-            lines += ["Source description (verbatim):", row.get("description", ""),
-                      f"Entry API: https://www.courtlistener.com/api/rest/v4/docket-entries/{event.entry_id}/", ""]
-    return subject, "\n".join(lines)

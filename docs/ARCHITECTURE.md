@@ -22,10 +22,10 @@
 
 | Stage | Module | Reads | Writes |
 | --- | --- | --- | --- |
-| detect | [src/pipeline/detect.py](../src/pipeline/detect.py) | `subscriptions`, `docket_watch`, `entries` | `events` (`detected`), `entries`, `docket_watch` (one transaction per docket) |
+| detect | [src/pipeline/detect.py](../src/pipeline/detect.py) | `subscriptions`, `docket_watch`, `entries` | `events` (`detected`), `entries`, `docket_watch` (one transaction per docket); `docket_info` once per docket from leftover budget |
 | analyze | [src/pipeline/analyze.py](../src/pipeline/analyze.py) | `events` (`detected`) | `analyses`, `events` → `analyzed`, or `failed` after 3 attempts |
 | route | [src/pipeline/route.py](../src/pipeline/route.py) | `events` (`analyzed`), latest `analyses`, `subscriptions` | `notifications` (`pending`), `events` → `routed` / `skipped` |
-| deliver | [src/pipeline/deliver.py](../src/pipeline/deliver.py) | `notifications` (`pending`) | `email_outbox`, `notifications` → `sent` / `needs_review` |
+| deliver | [src/pipeline/deliver.py](../src/pipeline/deliver.py) | `notifications` (`pending`) | `email_outbox`, `notifications` → `sent` / `needs_review`; rendering in [src/notify/render.py](../src/notify/render.py) |
 
 The runner executes the selected stages in order. A failing stage is reported, and later stages still run, so pending work keeps draining while CourtListener is down. Each run is recorded in `pipeline_runs` with its JSON report.
 
@@ -58,6 +58,7 @@ Created by [sql/migrations/](../sql/migrations/) on first connection, applied on
 | `notifications` | Per-recipient delivery state: `pending → sent / needs_review` |
 | `api_requests`, `api_control` | Persistent request ledger and throttle pause, per API |
 | `pipeline_runs` | Run history and reports |
+| `docket_info` | Case name, number, court and page path for digests, fetched once per docket |
 
 The legacy tables (`dockets`, `entries`, `runs`, `changes`, `email_outbox`) are kept. `entries` is the comparison baseline. `email_outbox` provides once-only delivery.
 
@@ -66,7 +67,7 @@ The legacy tables (`dockets`, `entries`, `runs`, `changes`, `email_outbox`) are 
 ## Extension points
 
 ### New data source
-Implement `Source.fetch_docket_changes(docket_id, since, until) -> SourceResult` (see [src/sources/courtlistener.py](../src/sources/courtlistener.py)). Draw every request from a `RequestBudget` with its own `api` name. Raise on invalid data rather than skipping it. Webhooks (M4) will write to the same `events` table.
+Implement `Source.fetch_docket_changes(docket_id, since, until) -> SourceResult` and `fetch_docket_info(docket_id)` (see [src/sources/courtlistener.py](../src/sources/courtlistener.py)). Draw every request from a `RequestBudget` with its own `api` name. Raise on invalid data rather than skipping it. Webhooks (M4) will write to the same `events` table.
 
 ### New analyzer
 Implement `Analyzer.analyze(event) -> Analysis` and register it in [src/analyzers/registry.py](../src/analyzers/registry.py). Return the shared `Analysis` shape (`importance`, `category`, `summary`, `reasons`, `details`), and bump `version` whenever behaviour changes. Raise on failure: the stage records only the exception type and retries up to three times.
@@ -75,7 +76,7 @@ Implement `Analyzer.analyze(event) -> Analysis` and register it in [src/analyzer
 OpenAI-compatible providers need configuration only (`LLM_PROVIDER=openai_compatible`, `LLM_BASE_URL`, `LLM_MODEL`, `LLM_API_KEY`). For any other API, add a class with `complete(messages, json_mode=False) -> str` and decorate it with `@register("<name>")` in [src/llm/client.py](../src/llm/client.py). Error messages must never contain keys, prompts or response bodies.
 
 ### New notification channel
-Implement `Notifier.send(recipient, subject, body, key)` and return `sent` or `needs_review`. Deliver at most once per `key`; the email notifier uses `email_outbox` for this.
+Implement `Notifier.send(recipient, subject, body, key, html=None)` and return `sent` or `needs_review`. Deliver at most once per `key`; the email notifier uses `email_outbox` for this.
 
 ## Toward agents
 
