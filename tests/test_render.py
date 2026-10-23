@@ -89,7 +89,7 @@ class DocketInfoTests(unittest.TestCase):
         info = self.fetch({"id": 5, "case_name": " A v. B ", "docket_number": "1:26-cv-1", "court_id": "nysd",
                            "absolute_url": "/docket/5/a-v-b/"})
         self.assertEqual(info, {"case_name": "A v. B", "docket_number": "1:26-cv-1", "court": "NYSD",
-                                "absolute_url": "/docket/5/a-v-b/"})
+                                "court_id": "nysd", "absolute_url": "/docket/5/a-v-b/"})
 
     def test_untrusted_values_are_dropped(self):
         info = self.fetch({"id": 5, "case_name": None, "case_name_short": "Short", "court_citation_string": "S.D.N.Y.",
@@ -97,6 +97,25 @@ class DocketInfoTests(unittest.TestCase):
         self.assertEqual((info["case_name"], info["court"], info["absolute_url"]), ("Short", "S.D.N.Y.", None))
         with self.assertRaises(SourceError):
             self.fetch({"id": 6})
+        self.assertIsNone(self.fetch({"id": 5, "court_id": "../evil"})["court_id"])
+
+    def court(self, data, court_id="nysd"):
+        store = PipelineStore(":memory:")
+        self.addCleanup(store.close)
+        session = MagicMock()
+        session.get.return_value = MagicMock(status_code=200, json=lambda: data)
+        source = CourtListenerSource(session, RequestBudget(store, Limits()))
+        return source.fetch_court_info(court_id), session
+
+    def test_court_info(self):
+        info, session = self.court({"id": "nysd", "citation_string": "S.D.N.Y.", "short_name": "S.D. New York",
+                                    "full_name": "District Court, S.D. New York"})
+        self.assertEqual(info, {"citation": "S.D.N.Y.", "full_name": "District Court, S.D. New York"})
+        self.assertEqual(session.get.call_args.args[0], "https://www.courtlistener.com/api/rest/v4/courts/nysd/")
+        self.assertEqual(self.court({"id": "nysd", "short_name": "S.D. New York"})[0]["citation"], "S.D. New York")
+        for data, court_id in (({"id": "cand"}, "nysd"), ({"id": "x"}, "x/../y"), ({"id": ""}, "")):
+            with self.subTest(court_id=court_id), self.assertRaises(SourceError):
+                self.court(data, court_id)
 
 
 if __name__ == "__main__":

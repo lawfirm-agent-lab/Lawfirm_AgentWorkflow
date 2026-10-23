@@ -12,7 +12,7 @@ port = os.environ.get('TEST_POSTGRES_PORT', '')
 if not port.isascii() or not port.isdecimal() or not 1 <= int(port) <= 65535:
     raise SystemExit('Provide a disposable localhost TEST_POSTGRES_PORT')
 URL = f'postgresql://postgres:local-test-only@127.0.0.1:{int(port)}/lawfirm_test'
-TABLES = ('docket_info, notifications, analyses, events, subscriptions, recipients, docket_watch, api_requests, api_control, '
+TABLES = ('court_info, docket_info, notifications, analyses, events, subscriptions, recipients, docket_watch, api_requests, api_control, '
           'pipeline_runs, email_outbox, changes, entries, runs, dockets')
 
 

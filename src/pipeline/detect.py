@@ -74,7 +74,8 @@ def record_error(store, docket_id, error, now):
 
 
 def fetch_missing_info(store, source, watches, now, report):
-    """Display metadata is fetched once per docket, after change detection, from leftover budget."""
+    """Display metadata is fetched once per docket and once per court, after change detection,
+    from leftover budget."""
     for watch in watches:
         docket_id = watch["docket_id"]
         if store.execute("SELECT 1 FROM docket_info WHERE docket_id=?", (docket_id,)).fetchone():
@@ -87,16 +88,31 @@ def fetch_missing_info(store, source, watches, now, report):
             report["info_failed"].append({"docket_id": docket_id, "error": str(exc)})
             continue
         with store.transaction():
-            store.execute("INSERT INTO docket_info VALUES (?,?,?,?,?,?) ON CONFLICT(docket_id) DO NOTHING",
+            store.execute("INSERT INTO docket_info(docket_id,case_name,docket_number,court,absolute_url,fetched_at,court_id) "
+                          "VALUES (?,?,?,?,?,?,?) ON CONFLICT(docket_id) DO NOTHING",
                           (docket_id, info["case_name"], info["docket_number"], info["court"], info["absolute_url"],
-                           now.isoformat()))
+                           now.isoformat(), info.get("court_id")))
         report["info_fetched"] += 1
+    missing = store.execute("SELECT DISTINCT d.court_id FROM docket_info d LEFT JOIN court_info c ON c.court_id=d.court_id "
+                            "WHERE d.court_id IS NOT NULL AND c.court_id IS NULL ORDER BY d.court_id").fetchall()
+    for row in missing:
+        try:
+            court = source.fetch_court_info(row["court_id"])
+        except QuotaExhausted:
+            return
+        except SourceError as exc:
+            report["info_failed"].append({"court_id": row["court_id"], "error": str(exc)})
+            continue
+        with store.transaction():
+            store.execute("INSERT INTO court_info VALUES (?,?,?,?) ON CONFLICT(court_id) DO NOTHING",
+                          (row["court_id"], court["citation"], court["full_name"], now.isoformat()))
+        report["courts_fetched"] += 1
 
 
 def detect(store, source, settings, now):
     until = now - timedelta(seconds=settings.source_lag_seconds)
     report = {"dockets": 0, "events": 0, "partial": [], "failed": [], "quota_stopped": False,
-              "info_fetched": 0, "info_failed": []}
+              "info_fetched": 0, "courts_fetched": 0, "info_failed": []}
     with store.transaction():
         watches = [ensure_watch(store, d, now) for d in watched_dockets(store)]
     # Least recently checked first, so a tight budget rotates fairly across dockets.
