@@ -8,16 +8,22 @@ from email.message import EmailMessage
 from email.utils import make_msgid
 
 
-def settings():
-    names = ("SMTP_HOST", "SMTP_PORT", "SMTP_USERNAME", "SMTP_PASSWORD", "EMAIL_FROM", "EMAIL_TO")
+def validate_address(value, label="Email address"):
+    if any(c in value for c in "\r\n,; ") or value.count("@") != 1:
+        raise ValueError(label + " must be one plain email address")
+    return value
+
+
+def settings(require_recipient=True):
+    """EMAIL_TO is needed by the legacy single-recipient flow only; the pipeline reads recipients from the database."""
+    names = ("SMTP_HOST", "SMTP_PORT", "SMTP_USERNAME", "SMTP_PASSWORD", "EMAIL_FROM") + (("EMAIL_TO",) if require_recipient else ())
     values = {k: os.environ.get(k, "").strip() for k in names}
     missing = [k for k, v in values.items() if not v]
     if missing:
         raise ValueError("Missing email settings: " + ", ".join(missing))
     for key in ("EMAIL_FROM", "EMAIL_TO"):
-        value = values[key]
-        if any(c in value for c in "\r\n,; ") or value.count("@") != 1:
-            raise ValueError(key + " must be one plain email address")
+        if key in values:
+            validate_address(values[key], key)
     try:
         values["SMTP_PORT"] = int(values["SMTP_PORT"])
     except ValueError:
@@ -25,6 +31,21 @@ def settings():
     if values["SMTP_PORT"] not in (465, 587):
         raise ValueError("Use TLS SMTP port 465 or STARTTLS port 587")
     return values
+
+
+def smtp_send(cfg, message):
+    """Send over TLS (465) or STARTTLS (587). Raises on any failure, including refused recipients."""
+    context = ssl.create_default_context()
+    client = smtplib.SMTP_SSL(cfg["SMTP_HOST"], cfg["SMTP_PORT"], timeout=30, context=context) if cfg["SMTP_PORT"] == 465 else smtplib.SMTP(cfg["SMTP_HOST"], cfg["SMTP_PORT"], timeout=30)
+    with client:
+        if cfg["SMTP_PORT"] == 587:
+            client.ehlo()
+            client.starttls(context=context)
+            client.ehlo()
+        client.login(cfg["SMTP_USERNAME"], cfg["SMTP_PASSWORD"])
+        refused = client.send_message(message)
+        if refused:
+            raise RuntimeError("Recipient refused")
 
 
 def deliver(store, docket_id, digest, event_key, cfg, transport=None):
@@ -43,17 +64,7 @@ def deliver(store, docket_id, digest, event_key, cfg, transport=None):
         if transport:
             transport(message)
         else:
-            context = ssl.create_default_context()
-            client = smtplib.SMTP_SSL(cfg["SMTP_HOST"], cfg["SMTP_PORT"], timeout=30, context=context) if cfg["SMTP_PORT"] == 465 else smtplib.SMTP(cfg["SMTP_HOST"], cfg["SMTP_PORT"], timeout=30)
-            with client:
-                if cfg["SMTP_PORT"] == 587:
-                    client.ehlo()
-                    client.starttls(context=context)
-                    client.ehlo()
-                client.login(cfg["SMTP_USERNAME"], cfg["SMTP_PASSWORD"])
-                refused = client.send_message(message)
-                if refused:
-                    raise RuntimeError("Recipient refused")
+            smtp_send(cfg, message)
     except Exception as exc:
         # SMTP may have accepted a message before a connection error; do not retry blindly.
         store.finish_email(key, "uncertain", type(exc).__name__)
