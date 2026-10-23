@@ -1,8 +1,9 @@
-name: Check dockets hourly
+# Legacy single-docket check, superseded by run-pipeline.yml. Manual only.
+# Do not run alongside the pipeline: both update the entries table, so a legacy run
+# can absorb a change before the pipeline records it as an event.
+name: Legacy single-docket check (manual)
 
 on:
-  schedule:
-    - cron: "7 * * * *"
   workflow_dispatch:
 
 permissions:

@@ -1,4 +1,22 @@
-# check_interval_minutes is reserved; no scheduler is enabled yet.
+# Legacy single-docket check (src.main). The pipeline watches subscribed dockets instead.
+# check_interval_minutes is reserved; no scheduler reads it.
 dockets:
   - 73132799
 check_interval_minutes: 30
+
+# Pipeline (src.pipeline.runner). Secrets never belong in this file.
+pipeline:
+  analyzer: rules            # rules now; llm in Milestone 2 (ANALYZER variable overrides)
+  max_events_per_digest: 50
+  source_lag_seconds: 120    # skip the last two minutes, which may still be changing
+
+# CourtListener account limits are rolling: 5/minute, 50/hour, 125/day.
+courtlistener:
+  per_minute: 5
+  per_hour: 50
+  per_day: 125
+  headroom_per_hour: 5       # left free for manual probes sharing the token
+  headroom_per_day: 25
+  min_interval_seconds: 13
+  max_requests_per_run: 20
+  max_pages_per_docket: 5

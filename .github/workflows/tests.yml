@@ -65,3 +65,7 @@ jobs:
         env:
           TEST_POSTGRES_PORT: ${{ job.services.postgres.ports[5432] }}
         run: python tests/integration/postgres_checks.py
+      - name: Run pipeline tests against disposable PostgreSQL
+        env:
+          TEST_POSTGRES_PORT: ${{ job.services.postgres.ports[5432] }}
+        run: python tests/integration/pipeline_checks.py
