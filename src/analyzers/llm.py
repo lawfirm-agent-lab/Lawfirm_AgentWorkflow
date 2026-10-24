@@ -128,13 +128,15 @@ class LLMAnalyzer:
             try:
                 reply = self.client.complete(messages, json_mode=True, max_tokens=self.output_limit)
             except LLMError as exc:
-                self.stats["failed"] += 1
                 self.record(event_id, key, "failed", error=str(exc))
+                if exc.transient and attempt == 0:
+                    continue
+                self.stats["failed"] += 1
                 raise Unavailable("failed") from None
             for field in ("input_tokens", "output_tokens", "cached_tokens"):
                 self.stats[field] += getattr(reply, field)
             if not reply.text.strip():
-                # The provider documents occasional empty JSON-mode replies; retry once.
+                # The provider documents occasional empty JSON-mode replies; retry once (as for a dropped connection).
                 self.record(event_id, key, "failed", reply, error="Empty response")
                 if attempt == 0:
                     continue

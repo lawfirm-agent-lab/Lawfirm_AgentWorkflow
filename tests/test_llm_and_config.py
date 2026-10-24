@@ -4,6 +4,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import requests
+
 from src.analyzers.llm import PROMPT_VERSION
 from src.analyzers.registry import create_analyzer
 from src.analyzers.rules import RulesAnalyzer
@@ -60,6 +62,28 @@ class LLMSettingsTests(unittest.TestCase):
         self.assertNotIn("sk-secret", str(error.exception))
         with self.assertRaises(ConfigError):
             create_client(LLMSettings.from_env({**DEEPSEEK, "LLM_PROVIDER": "unknown"}))
+
+    def test_transient_errors_and_cut_off_output(self):
+        client = lambda session: create_client(LLMSettings.from_env(DEEPSEEK), session)
+        cases = {"dropped connection": (requests.ConnectionError("reset"), True),
+                 "timeout": (requests.ReadTimeout("slow"), True)}
+        for name, (exc, transient) in cases.items():
+            with self.subTest(name=name), self.assertRaises(LLMError) as error:
+                session = MagicMock()
+                session.post.side_effect = exc
+                client(session).complete([])
+            self.assertEqual(error.exception.transient, transient)
+        for status, transient in ((503, True), (429, False), (400, False)):
+            with self.subTest(status=status), self.assertRaises(LLMError) as error:
+                client(MagicMock(**{"post.return_value": MagicMock(status_code=status)})).complete([])
+            self.assertEqual(error.exception.transient, transient)
+        session = MagicMock()
+        session.post.return_value = MagicMock(status_code=200)
+        session.post.return_value.json = lambda: {"choices": [{"message": {"content": '{"a": '}, "finish_reason": "length"}]}
+        with self.assertRaises(LLMError) as error:
+            client(session).complete([])
+        self.assertIn("max_tokens", str(error.exception))
+        self.assertFalse(error.exception.transient)
 
 
 class AnalyzerAndConfigTests(unittest.TestCase):

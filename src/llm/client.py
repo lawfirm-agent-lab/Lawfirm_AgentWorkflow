@@ -14,7 +14,12 @@ PROVIDERS = {}
 
 
 class LLMError(RuntimeError):
-    """Provider failure. Messages never include keys, prompts or response bodies."""
+    """Provider failure. Messages never include keys, prompts or response bodies.
+    transient: a dropped connection, timeout or 5xx, worth one retry."""
+
+    def __init__(self, message, transient=False):
+        super().__init__(message)
+        self.transient = transient
 
 
 @dataclass(frozen=True)
@@ -61,14 +66,19 @@ class OpenAICompatibleClient:
             response = self.session.post(self.settings.base_url + "/chat/completions", json=body, headers=headers,
                                          timeout=(10, self.settings.timeout_seconds), allow_redirects=False)
         except requests.RequestException as exc:
-            raise LLMError(f"LLM request failed: {type(exc).__name__}") from None
+            transient = isinstance(exc, (requests.ConnectionError, requests.Timeout))
+            raise LLMError(f"LLM request failed: {type(exc).__name__}", transient) from None
         if response.status_code != 200:
-            raise LLMError(f"LLM provider returned HTTP {response.status_code}")
+            raise LLMError(f"LLM provider returned HTTP {response.status_code}", response.status_code >= 500)
         try:
             data = response.json()
-            text = data["choices"][0]["message"]["content"] or ""
+            choice = data["choices"][0]
+            text = choice["message"]["content"] or ""
         except (ValueError, KeyError, IndexError, TypeError):
             raise LLMError("Unexpected LLM response shape") from None
+        if choice.get("finish_reason") == "length":
+            # Cut-off JSON would only fail parsing; name the real cause (thinking tokens count too).
+            raise LLMError("LLM output reached max_tokens")
         usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
         count = lambda *keys: next((usage[k] for k in keys if type(usage.get(k)) is int), 0)
         return LLMReply(text, count("prompt_tokens"), count("completion_tokens"),

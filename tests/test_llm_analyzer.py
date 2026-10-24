@@ -131,6 +131,16 @@ class AnalyzerTests(unittest.TestCase):
                 self.assertIsNone(result.summary)
                 self.assertEqual(result.details["llm"]["status"], name.split("-")[0])
 
+    def test_transient_failure_retried_once(self):
+        analyzer = self.analyzer(LLMError("LLM request failed: ConnectionError", transient=True), output())
+        self.assertEqual(analyzer.analyze(self.event()).importance, "high")
+        self.assertEqual((analyzer.stats["calls"], analyzer.stats["failed"], self.calls("failed"), self.calls("ok")), (2, 0, 1, 1))
+        drops = [LLMError("LLM request failed: ConnectionError", transient=True)] * 2
+        analyzer = self.analyzer(*drops)
+        other = {**ENTRY, "description": "Clerk's Notes: status conference held."}
+        self.assertEqual(analyzer.analyze(self.event(other, ident="e2")).details["llm"]["status"], "failed")
+        self.assertEqual((analyzer.stats["calls"], analyzer.stats["failed"]), (2, 1))
+
     def test_empty_reply_retried_once(self):
         analyzer = self.analyzer("", output())
         self.assertEqual(analyzer.analyze(self.event()).importance, "high")
