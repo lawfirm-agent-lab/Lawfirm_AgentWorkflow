@@ -34,6 +34,8 @@ class LLMLimits:
     max_tokens_per_day: int = 400000
     max_input_chars: int = 12000
     max_output_tokens: int = 800
+    max_document_chars: int = 60000
+    max_document_output_tokens: int = 4000
 
 
 @dataclass(frozen=True)
@@ -73,8 +75,8 @@ def load_settings(path=ROOT / "config.yaml", env=os.environ):
     if limits.per_hour <= limits.headroom_per_hour or limits.per_day <= limits.headroom_per_day:
         raise ConfigError("config.yaml: headroom must be smaller than the matching limit")
     llm = LLMLimits(**_section(LLMLimits, raw.get("llm"), "llm"))
-    if not llm.max_input_chars or not llm.max_output_tokens:
-        raise ConfigError("config.yaml: llm.max_input_chars and llm.max_output_tokens must be positive")
+    if not all((llm.max_input_chars, llm.max_output_tokens, llm.max_document_chars, llm.max_document_output_tokens)):
+        raise ConfigError("config.yaml: llm character and output token limits must be positive")
     settings = Settings(**pipeline, limits=limits, llm=llm)
     analyzer = env.get("ANALYZER", "").strip()
     return replace(settings, analyzer=analyzer) if analyzer else settings

@@ -32,12 +32,14 @@ def _run(args, timeout):
 
 def extract_pdf(path, *, language="eng", force_ocr=False, min_text_chars=40,
                 max_pages=200, max_bytes=50 * 1024 * 1024, timeout=120,
-                source_url=None):
+                source_url=None, layout=True):
     """Return page-numbered text; never modify the input or contact a service.
 
     Sparse text pages use OCR. Force OCR for mixed image/text pages or a bad
     existing text layer. Blank OCR results are explicitly flagged for review.
     Any tool failure aborts the result instead of silently omitting a page.
+    layout=False keeps table cells in reading order instead of side by side, so a
+    quoted cell is contiguous text (used by the document briefing).
     """
     if min_text_chars < 0 or max_pages < 1 or max_bytes < 1 or timeout <= 0:
         raise ValueError("Invalid extraction limits")
@@ -62,7 +64,7 @@ def extract_pdf(path, *, language="eng", force_ocr=False, min_text_chars=40,
     with tempfile.TemporaryDirectory(prefix="docket-ocr-") as directory:
         for number in range(1, int(match[1]) + 1):
             text = "" if force_ocr else _run(
-                ["pdftotext", "-f", str(number), "-l", str(number), "-layout",
+                ["pdftotext", "-f", str(number), "-l", str(number), *(["-layout"] if layout else []),
                  "-enc", "UTF-8", str(path), "-"], timeout).strip("\x0c\n\r ")
             method = "text"
             if force_ocr or sum(c.isalnum() for c in text) < min_text_chars:

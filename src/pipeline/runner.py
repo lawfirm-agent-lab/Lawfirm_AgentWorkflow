@@ -65,7 +65,7 @@ def run(store, stages, settings, *, dry_run=False, session=None, notifier=None, 
             elif stage == "route":
                 result = route(store)
             else:
-                result = deliver(store, notifier, settings, dry_run=dry_run, preview_dir=preview_dir)
+                result = deliver(store, notifier, settings, dry_run=dry_run, preview_dir=preview_dir, now=now)
             result["status"] = "failed" if result.get("failed") else "ok"
         except Exception as exc:
             error = f"{type(exc).__name__}: {exc}" if isinstance(exc, SAFE_ERRORS) else type(exc).__name__
