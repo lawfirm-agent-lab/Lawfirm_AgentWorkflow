@@ -90,6 +90,20 @@ class RenderTests(unittest.TestCase):
         subject, _, _ = render_digest([(event(1, 1, 5, "MOTION"), medium)], INFO, NOW)
         self.assertTrue(subject.startswith("[1 update]"))
 
+    def test_late_additions_are_labeled(self):
+        late = Event("e1", "courtlistener", 1, 1, "added", {"entry_number": 1693, "date_filed": "2026-09-04",
+                                                           "description": "RULE 56.1 STATEMENT."}, None, "2026-10-23T22:00:00+00:00")
+        fresh = Event("e2", "courtlistener", 1, 2, "added", {"entry_number": 2237, "date_filed": "2026-10-23",
+                                                            "description": "RESPONSE."}, None, "2026-10-23T22:00:00+00:00")
+        unknown = Event("e3", "courtlistener", 1, 3, "added", {"entry_number": 5, "description": "NOTICE."}, None, "bad")
+        _, text, _ = render_digest([(late, LOW), (fresh, LOW), (unknown, LOW)], INFO, NOW)
+        self.assertIn("#1693 · Sep 4, 2026 · NEW ON COURTLISTENER", text)
+        self.assertIn("#2237 · Oct 23, 2026 · NEW ·", text)
+        self.assertIn("#5 · date unknown · NEW ·", text)
+        self.assertIn("only now available on CourtListener", text)
+        _, text, _ = render_digest([(fresh, LOW)], INFO, NOW)
+        self.assertNotIn("only now available", text)
+
     def test_document_only_change_label(self):
         before = {"description": "ORDER"}
         _, text, _ = render_digest([(event(1, 1, 1, "ORDER", "modified", before), HIGH)], INFO, NOW)

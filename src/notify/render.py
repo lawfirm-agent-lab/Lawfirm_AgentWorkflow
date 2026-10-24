@@ -23,6 +23,9 @@ FOOTER = ('Why you got this: you follow these cases. "Priority" means court-issu
           "verify against the source before acting.")
 AI_NOTE = ("AI summaries and actions are machine-generated and may be wrong. Deadlines are shown only when "
            "the quoted text, including the date, appears in the entry.")
+LATE_NOTE = ("NEW ON COURTLISTENER: filed earlier (date shown) but only now available on CourtListener, "
+             "for example when an older entry is added to RECAP.")
+LATE_DAYS = 7
 DOCUMENT_NOTE = ("Points read from the document are shown only when their quote, and any date, appears on "
                  "the page shown (p.); which event or party a date belongs to is the AI's reading.")
 
@@ -69,7 +72,13 @@ def pdf_url(payload):
 
 def change_label(event):
     if event.kind == "added":
-        return "NEW"
+        # An entry filed long before CourtListener changed it was added late (RECAP backfill), not filed today.
+        try:
+            late = (datetime.fromisoformat(event.source_modified_at).date()
+                    - date.fromisoformat(event.payload.get("date_filed"))).days > LATE_DAYS
+        except (TypeError, ValueError):
+            late = False
+        return "NEW ON COURTLISTENER" if late else "NEW"
     before = event.before or {}
     if before.get("description") != event.payload.get("description"):
         return "UPDATED · description changed"
@@ -174,7 +183,8 @@ def render_digest(items, infos=None, now=None, remaining=0):
         headline += f" · {remaining} more in the next digest"
     entries = [e for c in cases for key, _ in SECTIONS for e in c[key]]
     footer = FOOTER + ((AI_NOTE,) if any(e["summary"] for e in entries) else ()) + \
-        ((DOCUMENT_NOTE,) if any(e["document"] for e in entries) else ())
+        ((DOCUMENT_NOTE,) if any(e["document"] for e in entries) else ()) + \
+        ((LATE_NOTE,) if any(e["label"] == "NEW ON COURTLISTENER" for e in entries) else ())
     return subject, text_view(cases, headline, stamp, footer), html_view(cases, headline, stamp, footer)
 
 

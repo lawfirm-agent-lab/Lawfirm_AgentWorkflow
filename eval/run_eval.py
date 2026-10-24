@@ -20,6 +20,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from src.analyzers.llm import LLMAnalyzer  # noqa: E402
 from src.analyzers.registry import create_analyzer  # noqa: E402
 from src.analyzers.rules import RulesAnalyzer  # noqa: E402
 from src.core.config import load_settings  # noqa: E402
@@ -67,7 +68,7 @@ def report(rows, llm, prices):
     labels = [r["item"]["label"] for r in rows]
     lines = [f"# Evaluation report — {datetime.now(timezone.utc):%Y-%m-%d %H:%M} UTC", "",
              f"Items: {len(rows)} · label status: {dict(Counter(r['item'].get('label_status') for r in rows))}"
-             + (f" · model: {llm.llm.model} ({llm.llm.base_url})" if llm else ""), ""]
+             + (f" · model: {llm.llm.model} ({llm.llm.base_url}) · prompt: {llm.prompt_version}" if llm else ""), ""]
     systems = [("rules", [r["rules"].importance for r in rows])]
     if llm:
         systems += [("llm final", [r["llm"].importance for r in rows]),
@@ -142,6 +143,7 @@ def main(argv=None):
     parser.add_argument("--profile", choices=sorted(PROFILES), help="Use another provider (its key from e.g. OPENROUTER_API_KEY)")
     parser.add_argument("--model", help="Model name as the provider spells it")
     parser.add_argument("--extra-body", help="Override LLM_EXTRA_BODY for this run (JSON)")
+    parser.add_argument("--prompt-version", help="Compare an older prompt, e.g. docket_entry_v3")
     parser.add_argument("--price-in", type=float, default=0.30, help="USD per 1M uncached input tokens")
     parser.add_argument("--price-cached", type=float, default=0.006, help="USD per 1M cached input tokens")
     parser.add_argument("--price-out", type=float, default=1.20, help="USD per 1M output tokens")
@@ -156,10 +158,13 @@ def main(argv=None):
         llm = None
         if not args.rules_only:
             settings = load_settings()
-            # Evaluation is bounded by the label count, not the per-run production cap.
-            settings = replace(settings, llm=replace(settings.llm, max_calls_per_run=len(items) * 2))
+            # Evaluation is bounded by the label count, not the production per-run and per-day caps.
+            settings = replace(settings, llm=replace(settings.llm, max_calls_per_run=len(items) * 2,
+                                                     max_tokens_per_day=10**9))
             llm = create_analyzer("llm", profile_env(os.environ, args.profile, args.model, args.extra_body),
                                   store=store, settings=settings)
+            if args.prompt_version:
+                llm = LLMAnalyzer(store, llm.client, llm.llm, llm.limits, prompt_version=args.prompt_version)
         text, gate = report(evaluate(items, llm), llm, {"in": args.price_in, "cached": args.price_cached, "out": args.price_out})
     finally:
         store.close()
