@@ -23,8 +23,9 @@ def docket_info(store, docket_ids):
     return {row["docket_id"]: {**dict(row), "court": row["citation"] or row["court"]} for row in rows if row}
 
 
-def deliver(store, notifier, settings, dry_run=False, preview_dir=None):
-    """dry_run renders digests without sending or changing state. Previews never include addresses."""
+def deliver(store, notifier, settings, dry_run=False, preview_dir=None, now=None):
+    """dry_run renders digests without sending or changing state. Previews never include addresses.
+    now: the run's clock, used for the digest date (defaults to the current time)."""
     report = {"digests": 0, "sent": 0, "needs_review": 0, "dry_run": dry_run, "previews": []}
     recipients = store.execute("SELECT DISTINCT r.recipient_id,r.email FROM notifications n "
                                "JOIN recipients r ON r.recipient_id=n.recipient_id "
@@ -36,7 +37,7 @@ def deliver(store, notifier, settings, dry_run=False, preview_dir=None):
         total = store.execute("SELECT COUNT(*) AS n FROM notifications WHERE recipient_id=? AND status='pending'",
                               (recipient["recipient_id"],)).fetchone()["n"]
         subject, body, rich = render_digest(items, docket_info(store, {event.docket_id for event, _ in items}),
-                                            remaining=total - len(items))
+                                            now=now, remaining=total - len(items))
         ids = sorted(event.event_id for event, _ in items)
         key = hashlib.sha256(json.dumps(["digest-v1", recipient["recipient_id"], ids]).encode()).hexdigest()
         report["digests"] += 1
