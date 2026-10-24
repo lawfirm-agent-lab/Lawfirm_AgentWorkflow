@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 
 import requests
 
-from src.analyzers.registry import create_analyzer
+from src.analyzers.registry import check_analyzer, create_analyzer
 from src.core.config import ROOT, ConfigError, load_settings, secure_database_url
 from src.core.ratelimit import RequestBudget
 from src.notifiers.email import EmailNotifier
@@ -94,7 +94,8 @@ def main(argv=None):
         token = os.environ.get("COURTLISTENER_TOKEN", "").strip()
         if "detect" in args.stages and not token:
             raise ConfigError("COURTLISTENER_TOKEN is missing or empty")
-        analyzer = create_analyzer(settings.analyzer) if "analyze" in args.stages else None
+        if "analyze" in args.stages:
+            check_analyzer(settings.analyzer)
         email_cfg = email_settings(require_recipient=False) if "deliver" in args.stages and not args.dry_run else None
     except ValueError as exc:
         # ConfigError and email settings errors carry safe, secret-free messages.
@@ -112,6 +113,7 @@ def main(argv=None):
         with requests.Session() as session:
             session.headers.update({"Authorization": "Token " + token, "Accept": "application/json"})
             notifier = EmailNotifier(store, email_cfg) if email_cfg else None
+            analyzer = create_analyzer(settings.analyzer, store=store, settings=settings) if "analyze" in args.stages else None
             report = run(store, args.stages, settings, dry_run=args.dry_run, session=session, notifier=notifier,
                          analyzer=analyzer, preview_dir=None if os.environ.get("GITHUB_ACTIONS") else ROOT / "data" / "previews")
     except StoreError as exc:

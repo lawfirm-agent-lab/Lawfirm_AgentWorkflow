@@ -1,4 +1,7 @@
-"""Analyze stage: score detected events with the configured analyzer."""
+"""Analyze stage: score detected events with the configured analyzer.
+
+An analyzer may carry a .shadow analyzer whose results are stored for comparison only.
+"""
 from src.core.models import Event
 from src.store.db import now as utcnow
 
@@ -22,10 +25,25 @@ def analyze(store, analyzer, limit=200):
             report["failed"] += 1
             continue
         with store.transaction():
-            store.execute("INSERT INTO analyses VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(event_id,analyzer,analyzer_version) DO NOTHING",
-                          (event.event_id, analyzer.name, analyzer.version, result.importance, result.category,
-                           result.summary, result.to_json(), utcnow()))
+            save(store, event, analyzer, result)
             store.execute("UPDATE events SET status='analyzed',updated_at=? WHERE event_id=? AND status='detected'",
                           (utcnow(), event.event_id))
         report["analyzed"] += 1
+        shadow = getattr(analyzer, "shadow", None)
+        if shadow is not None:
+            try:
+                shadow_result = shadow.analyze(event)
+                with store.transaction():
+                    save(store, event, shadow, shadow_result)
+            except Exception:
+                report["shadow_failed"] = report.get("shadow_failed", 0) + 1
+    for source in (analyzer, getattr(analyzer, "shadow", None)):
+        if hasattr(source, "stats"):
+            report["llm"] = dict(source.stats, role="shadow" if source is not analyzer else "primary")
     return report
+
+
+def save(store, event, analyzer, result):
+    store.execute("INSERT INTO analyses VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(event_id,analyzer,analyzer_version) DO NOTHING",
+                  (event.event_id, analyzer.name, analyzer.version, result.importance, result.category,
+                   result.summary, result.to_json(), utcnow()))

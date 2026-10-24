@@ -1,11 +1,11 @@
 """Route stage: decide which subscribers receive each analyzed event."""
-from src.core.models import Analysis, importance_rank
+from src.core.models import SHADOW_ANALYZER, Analysis, importance_rank
 from src.store.db import now as utcnow
 
 
 def latest_analysis(store, event_id):
-    row = store.execute("SELECT result_json FROM analyses WHERE event_id=? ORDER BY created_at DESC LIMIT 1",
-                        (event_id,)).fetchone()
+    row = store.execute("SELECT result_json FROM analyses WHERE event_id=? AND analyzer<>? ORDER BY created_at DESC LIMIT 1",
+                        (event_id, SHADOW_ANALYZER)).fetchone()
     return Analysis.from_json(row["result_json"]) if row else None
 
 

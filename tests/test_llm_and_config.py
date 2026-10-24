@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from src.analyzers.llm import PROMPT_VERSION
 from src.analyzers.registry import create_analyzer
 from src.analyzers.rules import RulesAnalyzer
 from src.core.config import ConfigError, load_settings, secure_database_url
@@ -26,7 +27,8 @@ class LLMSettingsTests(unittest.TestCase):
 
     def test_rejects_unsafe_settings(self):
         for change in ({"LLM_MODEL": ""}, {"LLM_API_KEY": ""}, {"LLM_BASE_URL": "http://api.example.com"},
-                       {"LLM_BASE_URL": "https://user:pw@api.example.com"}, {"LLM_TIMEOUT_SECONDS": "0"}):
+                       {"LLM_BASE_URL": "https://user:pw@api.example.com"}, {"LLM_TIMEOUT_SECONDS": "0"},
+                       {"LLM_EXTRA_BODY": "not json"}, {"LLM_EXTRA_BODY": '{"model": "other"}'}):
             with self.subTest(change=change), self.assertRaises(ConfigError) as error:
                 LLMSettings.from_env({**DEEPSEEK, **change})
             self.assertNotIn("sk-secret", str(error.exception))
@@ -35,8 +37,15 @@ class LLMSettingsTests(unittest.TestCase):
         session = MagicMock()
         session.post.return_value = MagicMock(status_code=200, json=lambda: {"choices": [{"message": {"content": "{}"}}]})
         client = create_client(LLMSettings.from_env(DEEPSEEK), session)
-        self.assertEqual(client.complete([{"role": "user", "content": "hi"}], json_mode=True), "{}")
+        session.post.return_value.json = lambda: {"choices": [{"message": {"content": "{}"}}],
+                                                  "usage": {"prompt_tokens": 51, "completion_tokens": 21,
+                                                            "prompt_cache_hit_tokens": 7}}
+        client = create_client(LLMSettings.from_env({**DEEPSEEK, "LLM_EXTRA_BODY": '{"thinking": {"type": "disabled"}}'}), session)
+        reply = client.complete([{"role": "user", "content": "hi"}], json_mode=True, max_tokens=300)
+        self.assertEqual((reply.text, reply.input_tokens, reply.output_tokens, reply.cached_tokens), ("{}", 51, 21, 7))
         call = session.post.call_args
+        self.assertEqual(call.kwargs["json"]["thinking"], {"type": "disabled"})
+        self.assertEqual(call.kwargs["json"]["max_tokens"], 300)
         self.assertEqual(call.args[0], "https://api.deepseek.com/chat/completions")
         self.assertEqual(call.kwargs["json"]["model"], "any-model-name")
         self.assertEqual(call.kwargs["json"]["response_format"], {"type": "json_object"})
@@ -56,9 +65,7 @@ class LLMSettingsTests(unittest.TestCase):
 class AnalyzerAndConfigTests(unittest.TestCase):
     def test_analyzer_selection(self):
         self.assertIsInstance(create_analyzer("rules", {}), RulesAnalyzer)
-        with self.assertRaises(ConfigError) as error:
-            create_analyzer("llm", DEEPSEEK)
-        self.assertIn("Milestone 2", str(error.exception))
+        self.assertEqual(create_analyzer("llm", DEEPSEEK).version, f"{PROMPT_VERSION}:any-model-name")
         with self.assertRaises(ConfigError):
             create_analyzer("llm", {})
         with self.assertRaises(ConfigError):
@@ -74,7 +81,8 @@ class AnalyzerAndConfigTests(unittest.TestCase):
     def test_settings_validation_and_override(self):
         settings = load_settings(self.write("pipeline:\n  analyzer: rules\ncourtlistener:\n  per_day: 100\n"), {"ANALYZER": "llm"})
         self.assertEqual((settings.analyzer, settings.limits.per_day), ("llm", 100))
-        for text in ("courtlistener:\n  per_day: -1\n", "pipeline:\n  unknown: 1\n",
+        self.assertEqual(load_settings(self.write("llm:\n  max_calls_per_run: 3\n"), {}).llm.max_calls_per_run, 3)
+        for text in ("courtlistener:\n  per_day: -1\n", "pipeline:\n  unknown: 1\n", "llm:\n  max_input_chars: 0\n",
                      "courtlistener:\n  per_day: 20\n  headroom_per_day: 25\n", "pipeline:\n  analyzer: ''\n"):
             with self.subTest(text=text), self.assertRaises(ConfigError):
                 load_settings(self.write(text), {})

@@ -114,7 +114,7 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(len(self.sent), 1)
         message = self.sent[0]
         self.assertEqual(message["To"], "lawyer@example.com")
-        self.assertTrue(message["Subject"].startswith(f"[2 court orders] Case {DOCKET} — Oct 23"))
+        self.assertTrue(message["Subject"].startswith(f"[2 priority items] Case {DOCKET} — Oct 23"))
         body = text(message)
         self.assertIn("ORDER amended.", body)
         self.assertIn("UPDATED · description changed", body)
@@ -268,6 +268,9 @@ class PipelineTests(unittest.TestCase):
             add_recipient(self.store, "a@example.com, b@example.com")
 
 
+from src.store.migrate import MIGRATIONS
+
+
 class MigrationTests(unittest.TestCase):
     def test_court_migration_backfills_existing_rows(self):
         import shutil
@@ -282,7 +285,7 @@ class MigrationTests(unittest.TestCase):
             apply_migrations(store, directory)
         with store.transaction():
             store.execute("INSERT INTO docket_info VALUES (1,'A v. B','1:26-cv-1','NYSD','/docket/1/a/','t')")
-        self.assertEqual(apply_migrations(store), ["003_court_info"])
+        self.assertEqual(apply_migrations(store)[0], "003_court_info")
         self.assertEqual(store.execute("SELECT court_id FROM docket_info").fetchone()["court_id"], "nysd")
 
     def test_reopen_is_idempotent_and_keeps_legacy_data(self):
@@ -296,7 +299,7 @@ class MigrationTests(unittest.TestCase):
             for _ in range(2):
                 store = PipelineStore(path)
                 versions = [r["version"] for r in store.execute("SELECT version FROM schema_migrations")]
-                self.assertEqual(versions, ["001_pipeline", "002_docket_info", "003_court_info"])
+                self.assertEqual(versions, sorted(p.stem for p in MIGRATIONS.glob("*.sql")))
                 self.assertEqual(store.execute("SELECT COUNT(*) AS n FROM entries").fetchone()["n"], 1)
                 store.close()
 
