@@ -4,7 +4,7 @@ Docket Agent monitors U.S. federal court dockets on [CourtListener](https://www.
 
 Court records change often, and lawyers cannot watch every case all day. The goal is a reliable, auditable alert: what changed, why it was selected, and a link to the source.
 
-> **Status: Milestone 1 (pipeline skeleton) is in progress.** Screening is rule-based. LLM analysis (DeepSeek first, but any provider) arrives in Milestone 2. See [docs/M1.md](docs/M1.md) for scope and acceptance criteria and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how to extend the system.
+> **Status:** Milestone 1 (the pipeline) is in its one-week cloud trial. Milestone 2 (LLM analysis) is built and evaluated locally, and is not yet enabled in the cloud. See [docs/M1.md](docs/M1.md), [docs/M2.md](docs/M2.md) and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## How it works
 
@@ -18,9 +18,9 @@ CourtListener ──► Detect ──► Analyze ──► Route ──► Deliv
 | Stage | What it does |
 | --- | --- |
 | **Detect** | For each subscribed docket, asks CourtListener only for entries modified since the stored cursor. An unchanged docket costs one request. New or changed content becomes an *event*. |
-| **Analyze** | Scores each event (`high`, `medium`, `low`, `ignore`). M1 uses description rules that look for court orders, judgments and court notices. |
+| **Analyze** | Scores each event (`high`, `medium`, `low`, `ignore`). `rules` matches court-order wording. `llm` adds a model reading (summary, action, deadlines) that is verified against the entry text and can only raise importance. `rules+shadow` stores the LLM reading for comparison only. |
 | **Route** | Matches events to subscribers by docket and minimum importance. |
-| **Deliver** | Sends one digest per recipient per run (HTML with a plain-text fallback). Court orders come first, grouped by case name and number, with the verbatim description and links to the entry and its PDF. Other activity follows on one line each. |
+| **Deliver** | Sends one digest per recipient per run (HTML with a plain-text fallback). Priority items come first, then Worth a look, grouped by case name and number, with the verbatim description, any verified AI summary and deadlines, and links to the entry and its PDF. Other activity is grouped by filing type ("28 declarations and affidavits (19 sealed): …") with one link to the whole range, so heavy filing days stay short. |
 
 Every stage reads and writes the database only, so a stage can fail, be rerun, or later be replaced (for example by an LLM-backed agent) without touching the others.
 
@@ -120,7 +120,11 @@ LLM_MODEL=<model name as the provider spells it>
 LLM_API_KEY=<secret>                        # optional only for localhost
 ```
 
-To add a provider with its own API, register a new adapter in [src/llm/client.py](src/llm/client.py). The LLM analyzer itself is Milestone 2. Selecting `ANALYZER=llm` today validates these settings and then stops with a clear message.
+`LLM_PROVIDER` names the API format, not the company. Provider-specific request fields go in `LLM_EXTRA_BODY` as JSON. DeepSeek needs `{"thinking": {"type": "disabled"}}`, because its default thinking output is billed. To add a provider with its own API, register a new adapter in [src/llm/client.py](src/llm/client.py).
+
+Spend is bounded by the `llm:` section of `config.yaml` (calls per run, tokens per UTC day, input size). Every attempt is logged in the `llm_calls` table, and identical inputs are served from that cache. Any failure or exhausted budget falls back to the rules result.
+
+Evaluate prompts and models against labeled real entries with `python eval/run_eval.py --dotenv` (see [docs/M2.md](docs/M2.md)).
 
 **Data residency:** M1 only handles public court records. Before sending any client-confidential material to a model, check the provider's data handling terms. DeepSeek, for example, states that it stores data in mainland China. Pick the provider per deployment.
 

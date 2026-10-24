@@ -38,5 +38,5 @@ class Notifier(Protocol):
 
 
 class LLMClient(Protocol):
-    def complete(self, messages: list[dict], *, json_mode: bool = False) -> str:
-        """Return the model's text reply for chat-style messages."""
+    def complete(self, messages: list[dict], *, json_mode: bool = False, max_tokens: int | None = None):
+        """Return an LLMReply (text plus token usage) for chat-style messages."""

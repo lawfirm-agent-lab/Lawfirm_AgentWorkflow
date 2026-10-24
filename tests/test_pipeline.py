@@ -114,7 +114,7 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(len(self.sent), 1)
         message = self.sent[0]
         self.assertEqual(message["To"], "lawyer@example.com")
-        self.assertTrue(message["Subject"].startswith(f"[2 court orders] Case {DOCKET} — Oct 23"))
+        self.assertTrue(message["Subject"].startswith(f"[2 priority items] Case {DOCKET} — Oct 23"))
         body = text(message)
         self.assertIn("ORDER amended.", body)
         self.assertIn("UPDATED · description changed", body)
@@ -142,6 +142,28 @@ class PipelineTests(unittest.TestCase):
         report, _ = self.run_all(NOW + timedelta(hours=4), stages=("detect",))
         self.assertEqual(report["info_failed"], [{"docket_id": 2, "error": "HTTP 404"}])
         self.assertEqual(report["failed"], [])
+
+    def test_entry_without_description_is_reported_once_complete(self):
+        self.start_watch()
+        self.source.pages[DOCKET] = [entry(1, description="")]
+        report, _ = self.run_all(stages=("detect",))
+        self.assertEqual((report["events"], report["awaiting_description"], self.count("entries")), (0, 1, 0))
+        self.source.pages[DOCKET] = [entry(1, "ORDER setting trial.", modified="2026-10-23T11:30:00+00:00")]
+        report, _ = self.run_all(NOW + timedelta(hours=1), stages=("detect",))
+        self.assertEqual(report["events"], 1)
+        self.assertEqual(self.store.execute("SELECT kind FROM events").fetchone()["kind"], "added")
+
+    def test_digest_reports_items_left_for_next_run(self):
+        from dataclasses import replace
+        self.start_watch()
+        subscribe(self.store, "lawyer@example.com", DOCKET, "low")
+        self.source.pages[DOCKET] = [entry(i, "Notice of appearance.") for i in range(1, 6)]
+        self.settings = replace(self.settings, max_events_per_digest=3)
+        self.run_all()
+        self.assertIn("2 more in the next digest", text(self.sent[0]))
+        self.run_all(NOW + timedelta(hours=2), stages=("deliver",))
+        self.assertEqual(len(self.sent), 2)
+        self.assertNotIn("more in the next digest", text(self.sent[1]))
 
     def test_cursor_advances_only_after_commit(self):
         self.start_watch()
@@ -268,6 +290,9 @@ class PipelineTests(unittest.TestCase):
             add_recipient(self.store, "a@example.com, b@example.com")
 
 
+from src.store.migrate import MIGRATIONS
+
+
 class MigrationTests(unittest.TestCase):
     def test_court_migration_backfills_existing_rows(self):
         import shutil
@@ -282,7 +307,7 @@ class MigrationTests(unittest.TestCase):
             apply_migrations(store, directory)
         with store.transaction():
             store.execute("INSERT INTO docket_info VALUES (1,'A v. B','1:26-cv-1','NYSD','/docket/1/a/','t')")
-        self.assertEqual(apply_migrations(store), ["003_court_info"])
+        self.assertEqual(apply_migrations(store)[0], "003_court_info")
         self.assertEqual(store.execute("SELECT court_id FROM docket_info").fetchone()["court_id"], "nysd")
 
     def test_reopen_is_idempotent_and_keeps_legacy_data(self):
@@ -296,7 +321,7 @@ class MigrationTests(unittest.TestCase):
             for _ in range(2):
                 store = PipelineStore(path)
                 versions = [r["version"] for r in store.execute("SELECT version FROM schema_migrations")]
-                self.assertEqual(versions, ["001_pipeline", "002_docket_info", "003_court_info"])
+                self.assertEqual(versions, sorted(p.stem for p in MIGRATIONS.glob("*.sql")))
                 self.assertEqual(store.execute("SELECT COUNT(*) AS n FROM entries").fetchone()["n"], 1)
                 store.close()
 

@@ -7,12 +7,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.store.pipeline import PipelineStore
 from tests.test_pipeline import PipelineTests
 from tests.test_source_and_budget import BudgetTests, SourceTests
+from tests.test_llm_analyzer import AnalyzerTests, ShadowAndRegistryTests
 
 port = os.environ.get('TEST_POSTGRES_PORT', '')
 if not port.isascii() or not port.isdecimal() or not 1 <= int(port) <= 65535:
     raise SystemExit('Provide a disposable localhost TEST_POSTGRES_PORT')
 URL = f'postgresql://postgres:local-test-only@127.0.0.1:{int(port)}/lawfirm_test'
-TABLES = ('court_info, docket_info, notifications, analyses, events, subscriptions, recipients, docket_watch, api_requests, api_control, '
+TABLES = ('llm_calls, court_info, docket_info, notifications, analyses, events, subscriptions, recipients, docket_watch, api_requests, api_control, '
           'pipeline_runs, email_outbox, changes, entries, runs, dockets')
 
 
@@ -48,8 +49,17 @@ class PostgreSQLBudgetTests(BudgetTests):
     make_store = make_store
 
 
+class PostgreSQLLLMAnalyzerTests(AnalyzerTests):
+    make_store = make_store
+
+
+class PostgreSQLShadowTests(ShadowAndRegistryTests):
+    make_store = make_store
+
+
 if __name__ == '__main__':
     suite = unittest.TestSuite()
-    for case in (PostgreSQLPipelineTests, PostgreSQLSourceTests, PostgreSQLBudgetTests):
+    for case in (PostgreSQLPipelineTests, PostgreSQLSourceTests, PostgreSQLBudgetTests,
+                 PostgreSQLLLMAnalyzerTests, PostgreSQLShadowTests):
         suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(case))
     raise SystemExit(not unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful())

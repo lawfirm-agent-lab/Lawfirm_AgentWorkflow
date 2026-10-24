@@ -28,18 +28,28 @@ class Limits:
 
 
 @dataclass(frozen=True)
+class LLMLimits:
+    """Spend controls for the LLM analyzer. Exceeding any of them falls back to rules."""
+    max_calls_per_run: int = 40
+    max_tokens_per_day: int = 400000
+    max_input_chars: int = 12000
+    max_output_tokens: int = 800
+
+
+@dataclass(frozen=True)
 class Settings:
     analyzer: str = "rules"
     max_events_per_digest: int = 50
     source_lag_seconds: int = 120
     limits: Limits = field(default_factory=Limits)
+    llm: LLMLimits = field(default_factory=LLMLimits)
 
 
 def _section(cls, data, name):
     data = data or {}
     if not isinstance(data, dict):
         raise ConfigError(f"config.yaml: '{name}' must be a mapping")
-    known = {f.name: f for f in fields(cls) if f.name != "limits"}
+    known = {f.name: f for f in fields(cls) if f.name not in ("limits", "llm")}
     unknown = set(data) - set(known)
     if unknown:
         raise ConfigError(f"config.yaml: unknown keys in '{name}': {', '.join(sorted(unknown))}")
@@ -62,7 +72,10 @@ def load_settings(path=ROOT / "config.yaml", env=os.environ):
     limits = Limits(**_section(Limits, raw.get("courtlistener"), "courtlistener"))
     if limits.per_hour <= limits.headroom_per_hour or limits.per_day <= limits.headroom_per_day:
         raise ConfigError("config.yaml: headroom must be smaller than the matching limit")
-    settings = Settings(**pipeline, limits=limits)
+    llm = LLMLimits(**_section(LLMLimits, raw.get("llm"), "llm"))
+    if not llm.max_input_chars or not llm.max_output_tokens:
+        raise ConfigError("config.yaml: llm.max_input_chars and llm.max_output_tokens must be positive")
+    settings = Settings(**pipeline, limits=limits, llm=llm)
     analyzer = env.get("ANALYZER", "").strip()
     return replace(settings, analyzer=analyzer) if analyzer else settings
 

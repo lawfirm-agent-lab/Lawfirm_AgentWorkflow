@@ -5,7 +5,10 @@ LLM_PROVIDER  adapter name, e.g. openai_compatible (DeepSeek, OpenAI, Qwen, Kimi
 LLM_BASE_URL  provider endpoint, e.g. https://api.deepseek.com
 LLM_MODEL     model name exactly as the provider spells it
 LLM_API_KEY   secret; optional only for local endpoints
+LLM_EXTRA_BODY  optional JSON object merged into each request for provider-specific
+              switches, e.g. {"thinking": {"type": "disabled"}} for DeepSeek
 """
+import json
 import os
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit
@@ -22,6 +25,7 @@ class LLMSettings:
     base_url: str
     api_key: str = field(default="", repr=False)
     timeout_seconds: int = 60
+    extra_body: dict = field(default_factory=dict)
 
     @classmethod
     def from_env(cls, env=os.environ):
@@ -43,5 +47,11 @@ class LLMSettings:
             raise ConfigError("LLM_TIMEOUT_SECONDS must be an integer") from None
         if not 1 <= timeout <= 600:
             raise ConfigError("LLM_TIMEOUT_SECONDS must be between 1 and 600")
+        try:
+            extra = json.loads(env.get("LLM_EXTRA_BODY", "").strip() or "{}")
+        except ValueError:
+            raise ConfigError("LLM_EXTRA_BODY must be a JSON object") from None
+        if not isinstance(extra, dict) or set(extra) & {"model", "messages"}:
+            raise ConfigError("LLM_EXTRA_BODY must be a JSON object without model or messages")
         return cls(values["LLM_PROVIDER"], values["LLM_MODEL"], values["LLM_BASE_URL"].rstrip("/"),
-                   values["LLM_API_KEY"], timeout)
+                   values["LLM_API_KEY"], timeout, extra)

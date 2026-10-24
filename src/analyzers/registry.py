@@ -1,17 +1,39 @@
-"""Choose the analyzer by name (config.yaml pipeline.analyzer or the ANALYZER variable)."""
+"""Choose the analyzer by name (config.yaml pipeline.analyzer or the ANALYZER variable).
+
+rules         description rules only
+llm           rules plus a verified LLM reading (falls back to rules on any failure)
+rules+shadow  rules decide; the LLM runs alongside and is stored for comparison only
+"""
 import os
 
+from src.analyzers.llm import LLMAnalyzer
 from src.analyzers.rules import RulesAnalyzer
-from src.core.config import ConfigError
+from src.core.config import ConfigError, Settings
+from src.core.models import SHADOW_ANALYZER
+from src.llm.client import create_client
 from src.llm.config import LLMSettings
 
-ANALYZERS = {"rules": lambda env: RulesAnalyzer()}
+NAMES = ("rules", "llm", "rules+shadow")
 
 
-def create_analyzer(name, env=os.environ):
+def check_analyzer(name, env=os.environ):
+    """Validate the choice and its provider settings before any database work."""
+    if name not in NAMES:
+        raise ConfigError(f"Unknown analyzer {name!r}; available: {', '.join(NAMES)}")
+    if name != "rules":
+        LLMSettings.from_env(env)
+
+
+def create_analyzer(name, env=os.environ, *, store=None, settings=None, session=None):
+    check_analyzer(name, env)
+    if name == "rules":
+        return RulesAnalyzer()
+    llm_settings = LLMSettings.from_env(env)
+    limits = (settings or Settings()).llm
+    llm = LLMAnalyzer(store, create_client(llm_settings, session), llm_settings, limits,
+                      name="llm" if name == "llm" else SHADOW_ANALYZER)
     if name == "llm":
-        LLMSettings.from_env(env)  # Validate the provider settings now so they are ready.
-        raise ConfigError("The LLM analyzer is scheduled for Milestone 2; use ANALYZER=rules for now")
-    if name not in ANALYZERS:
-        raise ConfigError(f"Unknown analyzer {name!r}; available: {', '.join(sorted(ANALYZERS))}, llm")
-    return ANALYZERS[name](env)
+        return llm
+    rules = RulesAnalyzer()
+    rules.shadow = llm
+    return rules

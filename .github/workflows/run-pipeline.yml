@@ -42,9 +42,14 @@ jobs:
           SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
-          # Optional repository variable; defaults to config.yaml (rules).
+          # Optional repository variable: rules (default) | rules+shadow | llm.
           ANALYZER: ${{ vars.ANALYZER }}
-          # Milestone 2: map LLM_PROVIDER, LLM_BASE_URL, LLM_MODEL (variables) and LLM_API_KEY (secret).
+          # LLM provider settings; only read when ANALYZER is llm or rules+shadow.
+          LLM_PROVIDER: ${{ vars.LLM_PROVIDER }}
+          LLM_BASE_URL: ${{ vars.LLM_BASE_URL }}
+          LLM_MODEL: ${{ vars.LLM_MODEL }}
+          LLM_EXTRA_BODY: ${{ vars.LLM_EXTRA_BODY }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
           DRY_RUN: ${{ inputs.dry_run }}
           PYTHONDONTWRITEBYTECODE: "1"
         run: |

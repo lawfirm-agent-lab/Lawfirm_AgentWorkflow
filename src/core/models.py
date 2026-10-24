@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 
 # Ordered from least to most important; subscriptions compare by position.
 IMPORTANCE = ("ignore", "low", "medium", "high")
+# Analyses stored under this name are for comparison only and never drive routing.
+SHADOW_ANALYZER = "llm-shadow"
 
 
 def importance_rank(level):
