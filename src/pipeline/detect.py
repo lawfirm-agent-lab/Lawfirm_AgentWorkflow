@@ -50,6 +50,10 @@ def save(store, source, watch, result, now):
                 raise ValueError("Entry belongs to another docket or has no docket reference")
             if not isinstance(row.get("description"), str):
                 raise ValueError("Entry description must be a string")
+            if not row["description"].strip():
+                # CourtListener often lists an entry before its text arrives. Record nothing yet:
+                # when the description lands, date_modified changes and it is detected once, in full.
+                continue
             raw, signature = encode(row), content(row)
             old = store.execute("SELECT raw_json,content_json FROM entries WHERE docket_id=? AND id=?",
                                 (docket_id, row["id"])).fetchone()
@@ -112,7 +116,7 @@ def fetch_missing_info(store, source, watches, now, report):
 def detect(store, source, settings, now):
     until = now - timedelta(seconds=settings.source_lag_seconds)
     report = {"dockets": 0, "events": 0, "partial": [], "failed": [], "quota_stopped": False,
-              "info_fetched": 0, "courts_fetched": 0, "info_failed": []}
+              "info_fetched": 0, "courts_fetched": 0, "info_failed": [], "awaiting_description": 0}
     with store.transaction():
         watches = [ensure_watch(store, d, now) for d in watched_dockets(store)]
     # Least recently checked first, so a tight budget rotates fairly across dockets.
@@ -123,6 +127,8 @@ def detect(store, source, settings, now):
         try:
             result = source.fetch_docket_changes(watch["docket_id"], watch["cursor_at"], until.isoformat())
             report["events"] += save(store, source.name, watch, result, now)
+            report["awaiting_description"] += sum(1 for r in result.rows
+                                                  if isinstance(r.get("description"), str) and not r["description"].strip())
         except QuotaExhausted:
             report["quota_stopped"] = True
             break

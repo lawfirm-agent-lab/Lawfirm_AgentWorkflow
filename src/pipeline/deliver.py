@@ -33,7 +33,10 @@ def deliver(store, notifier, settings, dry_run=False, preview_dir=None):
         items = pending(store, recipient["recipient_id"], settings.max_events_per_digest)
         if not items:
             continue
-        subject, body, rich = render_digest(items, docket_info(store, {event.docket_id for event, _ in items}))
+        total = store.execute("SELECT COUNT(*) AS n FROM notifications WHERE recipient_id=? AND status='pending'",
+                              (recipient["recipient_id"],)).fetchone()["n"]
+        subject, body, rich = render_digest(items, docket_info(store, {event.docket_id for event, _ in items}),
+                                            remaining=total - len(items))
         ids = sorted(event.event_id for event, _ in items)
         key = hashlib.sha256(json.dumps(["digest-v1", recipient["recipient_id"], ids]).encode()).hexdigest()
         report["digests"] += 1

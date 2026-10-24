@@ -20,7 +20,7 @@ CourtListener ──► Detect ──► Analyze ──► Route ──► Deliv
 | **Detect** | For each subscribed docket, asks CourtListener only for entries modified since the stored cursor. An unchanged docket costs one request. New or changed content becomes an *event*. |
 | **Analyze** | Scores each event (`high`, `medium`, `low`, `ignore`). `rules` matches court-order wording. `llm` adds a model reading (summary, action, deadlines) that is verified against the entry text and can only raise importance. `rules+shadow` stores the LLM reading for comparison only. |
 | **Route** | Matches events to subscribers by docket and minimum importance. |
-| **Deliver** | Sends one digest per recipient per run (HTML with a plain-text fallback). Court orders come first, grouped by case name and number, with the verbatim description and links to the entry and its PDF. Other activity follows on one line each. |
+| **Deliver** | Sends one digest per recipient per run (HTML with a plain-text fallback). Priority items come first, then Worth a look, grouped by case name and number, with the verbatim description, any verified AI summary and deadlines, and links to the entry and its PDF. Other activity is grouped by filing type ("28 declarations and affidavits (19 sealed): …") with one link to the whole range, so heavy filing days stay short. |
 
 Every stage reads and writes the database only, so a stage can fail, be rerun, or later be replaced (for example by an LLM-backed agent) without touching the others.
 

@@ -22,7 +22,7 @@
 
 | Stage | Module | Reads | Writes |
 | --- | --- | --- | --- |
-| detect | [src/pipeline/detect.py](../src/pipeline/detect.py) | `subscriptions`, `docket_watch`, `entries` | `events` (`detected`), `entries`, `docket_watch` (one transaction per docket); `docket_info` once per docket from leftover budget |
+| detect | [src/pipeline/detect.py](../src/pipeline/detect.py) | `subscriptions`, `docket_watch`, `entries` | `events` (`detected`), `entries`, `docket_watch` (one transaction per docket); `docket_info` once per docket from leftover budget. Entries without a description are deferred until CourtListener supplies the text. |
 | analyze | [src/pipeline/analyze.py](../src/pipeline/analyze.py) | `events` (`detected`) | `analyses`, `events` → `analyzed`, or `failed` after 3 attempts |
 | route | [src/pipeline/route.py](../src/pipeline/route.py) | `events` (`analyzed`), latest `analyses`, `subscriptions` | `notifications` (`pending`), `events` → `routed` / `skipped` |
 | deliver | [src/pipeline/deliver.py](../src/pipeline/deliver.py) | `notifications` (`pending`) | `email_outbox`, `notifications` → `sent` / `needs_review`; rendering in [src/notify/render.py](../src/notify/render.py) |

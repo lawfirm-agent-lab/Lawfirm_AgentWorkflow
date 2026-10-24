@@ -9,6 +9,8 @@ import re
 from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo
 
+from src.notify.grouping import group, summary_line
+
 SITE = "https://www.courtlistener.com"
 STORAGE = "https://storage.courtlistener.com/"
 TIMEZONE = ZoneInfo("America/Los_Angeles")
@@ -23,8 +25,12 @@ AI_NOTE = ("AI summaries and actions are machine-generated and may be wrong. Dea
 
 
 def one_line(text, limit=None):
+    """Collapse whitespace; when longer than limit, cut at a word boundary and add an ellipsis."""
     text = " ".join(str(text or "").split())
-    return text if limit is None or len(text) <= limit else text[:limit - 1].rstrip() + "…"
+    if limit is None or len(text) <= limit:
+        return text
+    cut = text[:limit - 1]
+    return (cut.rsplit(" ", 1)[0] if " " in cut[limit // 2:] else cut).rstrip(" ,.;:") + "…"
 
 
 def plural(n, word):
@@ -104,8 +110,16 @@ def build(items, infos):
     return ordered
 
 
-def render_digest(items, infos=None, now=None):
-    """items: [(Event, Analysis)] for one recipient. Returns (subject, text, html)."""
+def range_url(case):
+    numbers = [e["number"] for e in case["other"] if e["number"] is not None]
+    if len(numbers) < 2:
+        return None, 0
+    return f"{case['url']}?entry_gte={min(numbers)}&entry_lte={max(numbers)}", len(case["other"])
+
+
+def render_digest(items, infos=None, now=None, remaining=0):
+    """items: [(Event, Analysis)] for one recipient; remaining: pending items left for the next
+    digest. Returns (subject, text, html)."""
     cases = build(items, infos or {})
     now = (now or datetime.now(timezone.utc)).astimezone(TIMEZONE)
     counts = {key: sum(len(c[key]) for c in cases) for key, _ in SECTIONS}
@@ -120,6 +134,8 @@ def render_digest(items, infos=None, now=None):
     words = {"priority": "priority item", "review": "worth a look", "other": "other filing"}
     parts = [plural(counts[k], words[k]) if k != "review" else f"{counts[k]} worth a look" for k, _ in SECTIONS if counts[k]]
     headline = " · ".join(parts + [plural(len(cases), "case")])
+    if remaining:
+        headline += f" · {remaining} more in the next digest"
     has_ai = any(e["summary"] for c in cases for key, _ in SECTIONS for e in c[key])
     footer = FOOTER + ((AI_NOTE,) if has_ai else ())
     return subject, text_view(cases, headline, stamp, footer), html_view(cases, headline, stamp, footer)
@@ -134,10 +150,17 @@ def text_view(cases, headline, stamp, footer):
         lines += ["", title.upper(), ""]
         for case in (c for c in cases if c[key]):
             if key == "other":
+                groups, singles, undescribed = group(case[key])
                 lines.append(case["title"] + (f" ({case['meta']})" if case["meta"] else ""))
-                for e in case[key]:
-                    lines.append(f"  #{e['number'] or '?'} · {e['filed']} · {e['label']} · {one_line(e['description'], 140)}")
+                lines += [f"  • {summary_line(g)}" for g in groups]
+                for e in singles:
+                    lines.append(f"  • #{e['number'] or '?'} · {e['filed']} · {e['label']} · {one_line(e['description'], 160)}")
                     lines.append(f"    {e['url']}")
+                if undescribed:
+                    lines.append(f"  • {(f'{undescribed} entry' if undescribed == 1 else f'{undescribed} entries')} without a description yet")
+                url, count = range_url(case)
+                if url:
+                    lines.append(f"  View these {count} entries on CourtListener: {url}")
                 lines.append("")
                 continue
             lines += [case["title"]] + ([case["meta"]] if case["meta"] else []) + [""]
@@ -174,10 +197,17 @@ def html_view(cases, headline, stamp, footer):
             if key == "other":
                 meta = f' <span style="{muted}">({esc(case["meta"])})</span>' if case["meta"] else ""
                 parts.append(f'<p style="margin:8px 0 2px"><b>{esc(case["title"])}</b>{meta}</p><ul style="margin:0 0 8px;padding-left:20px">')
-                for e in case[key]:
+                groups, singles, undescribed = group(case[key])
+                parts += [f'<li style="margin:2px 0">{esc(summary_line(g))}</li>' for g in groups]
+                for e in singles:
                     parts.append(f'<li style="margin:2px 0">#{esc(e["number"] or "?")} · {esc(e["filed"])} · {esc(e["label"])} · '
-                                 f'{esc(one_line(e["description"], 140))} {link(e["url"], "View")}</li>')
+                                 f'{esc(one_line(e["description"], 160))} {link(e["url"], "View")}</li>')
+                if undescribed:
+                    parts.append(f'<li style="margin:2px 0;{muted}">{esc(f"{undescribed} entry" if undescribed == 1 else f"{undescribed} entries")} without a description yet</li>')
                 parts.append("</ul>")
+                url, count = range_url(case)
+                if url:
+                    parts.append(f'<p style="margin:0 0 8px">{link(url, f"View these {count} entries on CourtListener")}</p>')
                 continue
             parts.append(f'<h3 style="font-size:15px;margin:12px 0 2px">{link(case["url"], case["title"])}</h3>')
             if case["meta"]:

@@ -143,6 +143,28 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(report["info_failed"], [{"docket_id": 2, "error": "HTTP 404"}])
         self.assertEqual(report["failed"], [])
 
+    def test_entry_without_description_is_reported_once_complete(self):
+        self.start_watch()
+        self.source.pages[DOCKET] = [entry(1, description="")]
+        report, _ = self.run_all(stages=("detect",))
+        self.assertEqual((report["events"], report["awaiting_description"], self.count("entries")), (0, 1, 0))
+        self.source.pages[DOCKET] = [entry(1, "ORDER setting trial.", modified="2026-10-23T11:30:00+00:00")]
+        report, _ = self.run_all(NOW + timedelta(hours=1), stages=("detect",))
+        self.assertEqual(report["events"], 1)
+        self.assertEqual(self.store.execute("SELECT kind FROM events").fetchone()["kind"], "added")
+
+    def test_digest_reports_items_left_for_next_run(self):
+        from dataclasses import replace
+        self.start_watch()
+        subscribe(self.store, "lawyer@example.com", DOCKET, "low")
+        self.source.pages[DOCKET] = [entry(i, "Notice of appearance.") for i in range(1, 6)]
+        self.settings = replace(self.settings, max_events_per_digest=3)
+        self.run_all()
+        self.assertIn("2 more in the next digest", text(self.sent[0]))
+        self.run_all(NOW + timedelta(hours=2), stages=("deliver",))
+        self.assertEqual(len(self.sent), 2)
+        self.assertNotIn("more in the next digest", text(self.sent[1]))
+
     def test_cursor_advances_only_after_commit(self):
         self.start_watch()
         bad = entry(2)
