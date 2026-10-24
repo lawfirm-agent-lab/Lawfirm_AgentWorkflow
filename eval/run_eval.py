@@ -3,6 +3,7 @@
 python eval/run_eval.py --dotenv            # all labeled items, real LLM calls (cached in data/eval.db)
 python eval/run_eval.py --dotenv --limit 10
 python eval/run_eval.py --rules-only        # no LLM, no cost
+python eval/run_eval.py --dotenv --profile openrouter --model qwen/qwen3-235b-a22b --price-in 0.2 --price-out 0.6
 
 Responses are cached by input, prompt version and model, so reruns cost nothing until the
 prompt, the model or the entry text changes. The database never touches Supabase.
@@ -23,6 +24,7 @@ from src.analyzers.registry import create_analyzer  # noqa: E402
 from src.analyzers.rules import RulesAnalyzer  # noqa: E402
 from src.core.config import load_settings  # noqa: E402
 from src.core.models import IMPORTANCE, Event  # noqa: E402
+from src.llm.config import PROFILES, profile_env  # noqa: E402
 from src.store.pipeline import PipelineStore  # noqa: E402
 
 GATE_DEADLINE_ACCURACY = 0.9
@@ -64,7 +66,8 @@ def evaluate(items, llm):
 def report(rows, llm, prices):
     labels = [r["item"]["label"] for r in rows]
     lines = [f"# Evaluation report — {datetime.now(timezone.utc):%Y-%m-%d %H:%M} UTC", "",
-             f"Items: {len(rows)} · label status: {dict(Counter(r['item'].get('label_status') for r in rows))}", ""]
+             f"Items: {len(rows)} · label status: {dict(Counter(r['item'].get('label_status') for r in rows))}"
+             + (f" · model: {llm.llm.model} ({llm.llm.base_url})" if llm else ""), ""]
     systems = [("rules", [r["rules"].importance for r in rows])]
     if llm:
         systems += [("llm final", [r["llm"].importance for r in rows]),
@@ -136,6 +139,9 @@ def main(argv=None):
     parser.add_argument("--limit", type=int)
     parser.add_argument("--rules-only", action="store_true")
     parser.add_argument("--dotenv", action="store_true", help="Load LLM_* settings from the local .env")
+    parser.add_argument("--profile", choices=sorted(PROFILES), help="Use another provider (its key from e.g. OPENROUTER_API_KEY)")
+    parser.add_argument("--model", help="Model name as the provider spells it")
+    parser.add_argument("--extra-body", help="Override LLM_EXTRA_BODY for this run (JSON)")
     parser.add_argument("--price-in", type=float, default=0.30, help="USD per 1M uncached input tokens")
     parser.add_argument("--price-cached", type=float, default=0.006, help="USD per 1M cached input tokens")
     parser.add_argument("--price-out", type=float, default=1.20, help="USD per 1M output tokens")
@@ -152,7 +158,8 @@ def main(argv=None):
             settings = load_settings()
             # Evaluation is bounded by the label count, not the per-run production cap.
             settings = replace(settings, llm=replace(settings.llm, max_calls_per_run=len(items) * 2))
-            llm = create_analyzer("llm", os.environ, store=store, settings=settings)
+            llm = create_analyzer("llm", profile_env(os.environ, args.profile, args.model, args.extra_body),
+                                  store=store, settings=settings)
         text, gate = report(evaluate(items, llm), llm, {"in": args.price_in, "cached": args.price_cached, "out": args.price_out})
     finally:
         store.close()
