@@ -4,7 +4,7 @@ Docket Agent monitors U.S. federal court dockets on [CourtListener](https://www.
 
 Court records change often, and lawyers cannot watch every case all day. The goal is a reliable, auditable alert: what changed, why it was selected, and a link to the source.
 
-> **Status:** Milestone 1 (the pipeline) is in its one-week cloud trial. Milestone 2 (LLM analysis) is built and evaluated locally, and is not yet enabled in the cloud. See [docs/M1.md](docs/M1.md), [docs/M2.md](docs/M2.md) and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+> **Status:** Milestone 1 (the pipeline) is in its one-week cloud trial. Milestone 2 (LLM analysis) runs in the cloud in shadow mode. Milestone 3 (full-document briefing) is in progress locally. See [docs/M1.md](docs/M1.md), [docs/M2.md](docs/M2.md), [docs/M3.md](docs/M3.md) and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## How it works
 
@@ -140,7 +140,7 @@ Evaluate prompts and models against labeled real entries with `python eval/run_e
 ## Known limitations
 
 - CourtListener only has what reaches RECAP. Entries can be delayed or missing, so the digest is not a complete or real-time record.
-- Only docket-entry descriptions are screened. PDFs are not read (Milestone 3).
+- Only docket-entry descriptions are screened in the pipeline. The full-document briefing (Milestone 3, [docs/M3.md](docs/M3.md)) runs locally from `eval/run_document.py` and is not wired in yet.
 - Detection compares content (description, dates, numbers, document metadata). Re-indexing alone does not alert. Entries that disappear upstream are kept, not reported.
 - If a run is killed mid-way, it can stay marked `running` in `pipeline_runs`.
 - The legacy workflow and the pipeline share the `entries` table. A legacy run can absorb a change before the pipeline records it, so keep the legacy workflow disabled.
@@ -148,7 +148,8 @@ Evaluate prompts and models against labeled real entries with `python eval/run_e
 ## Other tools in this repository
 
 - `python -m src.main`: the legacy single-docket check (local snapshot, `--import-baseline`, `--email-demo`, `--send-email`, `--cloud-email`). It is superseded by the pipeline and kept for reference.
-- `python -m src.ingest.pdf file.pdf --output-dir data/ocr`: local PDF text extraction with a per-page Tesseract OCR fallback. It needs Poppler and Tesseract (`brew install poppler tesseract`). Output is page-numbered JSON and text. OCR text is not verified evidence. This tool is planned for Milestone 3.
+- `python -m src.ingest.pdf file.pdf --output-dir data/ocr`: local PDF text extraction with a per-page Tesseract OCR fallback. It needs Poppler and Tesseract (`brew install poppler tesseract`). Output is page-numbered JSON and text. OCR text is not verified evidence. The document briefing uses it with `layout=False` so table cells stay in reading order.
+- `python eval/run_document.py --dotenv --pdf file.pdf --entry-number N --description "..."`: try the Milestone 3 full-document briefing on one local document and preview the digest entry. `--entries data/<docket>_entries.json` uses saved CourtListener `plain_text` instead. No CourtListener requests.
 - `python -m src.ingest.collect_incremental`: the cross-case metadata collector. See [docs/INCREMENTAL_COLLECTOR.md](docs/INCREMENTAL_COLLECTOR.md).
 
 ## Testing
@@ -164,5 +165,7 @@ Integration scripts connect only to a disposable localhost database named `lawfi
 
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): stages, data model, extension points
 - [docs/M1.md](docs/M1.md): Milestone 1 scope, status and deployment checklist
+- [docs/M2.md](docs/M2.md): Milestone 2 LLM analysis, evaluation and rollout
+- [docs/M3.md](docs/M3.md): Milestone 3 full-document briefing, findings and next steps
 - [docs/NOTIFICATION_INTEGRATION_PLAN.md](docs/NOTIFICATION_INTEGRATION_PLAN.md), [docs/INCREMENTAL_COLLECTOR.md](docs/INCREMENTAL_COLLECTOR.md), [docs/DISCOVERY_PROBE.md](docs/DISCOVERY_PROBE.md): cross-case collector history
 - CourtListener API: <https://wiki.free.law/c/courtlistener/help/api/rest/v4/rest-api-v47>

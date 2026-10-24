@@ -6,6 +6,7 @@ rules+shadow  rules decide; the LLM runs alongside and is stored for comparison 
 """
 import os
 
+from src.analyzers.document import DocumentAnalyzer
 from src.analyzers.llm import LLMAnalyzer
 from src.analyzers.rules import RulesAnalyzer
 from src.core.config import ConfigError, Settings
@@ -37,3 +38,9 @@ def create_analyzer(name, env=os.environ, *, store=None, settings=None, session=
     rules = RulesAnalyzer()
     rules.shadow = llm
     return rules
+
+
+def create_document_analyzer(env=os.environ, *, store, settings=None, session=None):
+    """Full-document briefing with the configured LLM provider (see src.analyzers.document)."""
+    llm_settings = LLMSettings.from_env(env)
+    return DocumentAnalyzer(store, create_client(llm_settings, session), llm_settings, (settings or Settings()).llm)

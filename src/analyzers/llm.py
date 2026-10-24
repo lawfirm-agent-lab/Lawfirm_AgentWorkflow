@@ -69,6 +69,7 @@ class LLMAnalyzer:
         self.version = f"{prompt_version}:{llm_settings.model}"
         self.fallback = fallback or RulesAnalyzer()
         self.prompt = (PROMPTS / f"{prompt_version}.md").read_text(encoding="utf-8")
+        self.tag, self.parse_output, self.output_limit = "entry", parse, limits.max_output_tokens
         self.stats = {"model": llm_settings.model, "calls": 0, "cached": 0, "fallbacks": 0, "invalid": 0,
                       "failed": 0, "budget_skipped": 0, "dropped_claims": 0, "raised": 0,
                       "input_tokens": 0, "output_tokens": 0, "cached_tokens": 0}
@@ -105,17 +106,19 @@ class LLMAnalyzer:
         return row["n"]
 
     def model_output(self, event_id, source):
-        key = hashlib.sha256(json.dumps([self.llm.provider, self.llm.model, self.prompt_version, source]).encode()).hexdigest()
+        # The prompt text and provider options (e.g. thinking on or off) change the answer, so they are part of the key.
+        key = hashlib.sha256(json.dumps([self.llm.provider, self.llm.model, self.prompt_version, self.prompt,
+                                         self.llm.extra_body, source], sort_keys=True).encode()).hexdigest()
         cached = self.store.execute(
             "SELECT response_text FROM llm_calls WHERE input_hash=? AND model=? AND prompt_version=? AND status='ok' "
             "ORDER BY created_at DESC LIMIT 1", (key, self.llm.model, self.prompt_version)).fetchone()
         if cached:
             self.stats["cached"] += 1
             self.record(event_id, key, "cached", text=cached["response_text"])
-            return parse(cached["response_text"])
+            return self.parse_output(cached["response_text"])
         messages = [{"role": "system", "content": self.prompt},
-                    {"role": "user", "content": f"<entry>\n{source}\n</entry>"}]
-        estimate = (len(self.prompt) + len(source)) // 3 + self.limits.max_output_tokens
+                    {"role": "user", "content": f"<{self.tag}>\n{source}\n</{self.tag}>"}]
+        estimate = (len(self.prompt) + len(source)) // 3 + self.output_limit
         for attempt in range(2):
             if self.stats["calls"] >= self.limits.max_calls_per_run or \
                     self.tokens_today() + estimate > self.limits.max_tokens_per_day:
@@ -123,7 +126,7 @@ class LLMAnalyzer:
                 raise Unavailable("budget")
             self.stats["calls"] += 1
             try:
-                reply = self.client.complete(messages, json_mode=True, max_tokens=self.limits.max_output_tokens)
+                reply = self.client.complete(messages, json_mode=True, max_tokens=self.output_limit)
             except LLMError as exc:
                 self.stats["failed"] += 1
                 self.record(event_id, key, "failed", error=str(exc))
@@ -138,7 +141,7 @@ class LLMAnalyzer:
                 self.stats["failed"] += 1
                 raise Unavailable("failed")
             try:
-                parsed = parse(reply.text)
+                parsed = self.parse_output(reply.text)
             except InvalidOutput as exc:
                 self.stats["invalid"] += 1
                 self.record(event_id, key, "invalid", reply, error=str(exc))

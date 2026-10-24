@@ -27,3 +27,5 @@ llm:
   max_tokens_per_day: 400000  # input + output, UTC day
   max_input_chars: 12000      # entry text sent per call; long document text is truncated
   max_output_tokens: 800
+  max_document_chars: 60000   # full-document briefing: whole pages up to this size (~15k tokens)
+  max_document_output_tokens: 4000

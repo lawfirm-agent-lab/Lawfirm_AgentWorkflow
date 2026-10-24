@@ -8,6 +8,7 @@ from src.store.pipeline import PipelineStore
 from tests.test_pipeline import PipelineTests
 from tests.test_source_and_budget import BudgetTests, SourceTests
 from tests.test_llm_analyzer import AnalyzerTests, ShadowAndRegistryTests
+from tests.test_document import AnalyzerTests as DocumentAnalyzerTests
 
 port = os.environ.get('TEST_POSTGRES_PORT', '')
 if not port.isascii() or not port.isdecimal() or not 1 <= int(port) <= 65535:
@@ -57,9 +58,14 @@ class PostgreSQLShadowTests(ShadowAndRegistryTests):
     make_store = make_store
 
 
+class PostgreSQLDocumentAnalyzerTests(DocumentAnalyzerTests):
+    make_store = make_store
+
+
 if __name__ == '__main__':
     suite = unittest.TestSuite()
     for case in (PostgreSQLPipelineTests, PostgreSQLSourceTests, PostgreSQLBudgetTests,
-                 PostgreSQLLLMAnalyzerTests, PostgreSQLShadowTests):
+                 PostgreSQLLLMAnalyzerTests, PostgreSQLShadowTests,
+                 PostgreSQLDocumentAnalyzerTests):
         suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(case))
     raise SystemExit(not unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful())
