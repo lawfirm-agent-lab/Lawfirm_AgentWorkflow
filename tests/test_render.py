@@ -31,9 +31,10 @@ class RenderTests(unittest.TestCase):
                  (event(2, 21, 612, "MINUTE ORDER: conference reset.", "modified", {"description": "MINUTE ORDER: old."}), HIGH),
                  (event(1, 10, 1234, "ORDER granting motion to compel."), HIGH)]
         subject, text, rich = render_digest(items, INFO, NOW)
-        self.assertEqual(subject, "[2 court orders] FTC v. Amazon.com Inc +1 case — Oct 22")
-        self.assertTrue(text.startswith("2 court orders · 1 other filing · 2 cases    Oct 22, 2026, 4:17 PM PT"))
-        self.assertLess(text.index("COURT ORDERS"), text.index("OTHER ACTIVITY"))
+        self.assertEqual(subject, "[2 priority items] FTC v. Amazon.com Inc +1 case — Oct 22")
+        self.assertTrue(text.startswith("2 priority items · 1 other filing · 2 cases    Oct 22, 2026, 4:17 PM PT"))
+        self.assertLess(text.index("PRIORITY — REVIEW FIRST"), text.index("OTHER ACTIVITY"))
+        self.assertNotIn("AI summaries", text)
         self.assertLess(text.index("ORDER granting"), text.index("LETTER MOTION"))
         self.assertIn("1:25-md-03143 · S.D.N.Y.", text)
         self.assertIn("#612 · Filed Oct 22, 2026 · UPDATED · description changed", text)
@@ -44,7 +45,7 @@ class RenderTests(unittest.TestCase):
     def test_updates_only_and_fallbacks(self):
         subject, text, _ = render_digest([(event(9, 90, None, "Notice of appearance."), LOW)], {}, NOW)
         self.assertEqual(subject, "[1 update] Docket 9 — Oct 22")
-        self.assertNotIn("COURT ORDERS", text)
+        self.assertNotIn("PRIORITY", text)
         self.assertIn("#? · Oct 22, 2026 · NEW", text)
         self.assertIn("https://www.courtlistener.com/docket/9/\n", text)
 
@@ -68,6 +69,26 @@ class RenderTests(unittest.TestCase):
         _, text, rich = render_digest([(event(1, 1, 1, "ORDER", docs=[good]), HIGH)], INFO, NOW)
         self.assertIn("PDF: https://storage.courtlistener.com/recap/", text)
         self.assertIn(">PDF</a>", rich)
+
+    def test_ai_fields_and_worth_a_look(self):
+        llm = {"status": "ok", "action": "File an opposition.", "deadlines": [
+            {"date": "2026-11-05", "what": "Opposition due", "quote": "Opposition due by 11/5/2026 <b>"}]}
+        medium = Analysis("medium", "motion", "Defendant moved to dismiss.", details={"llm": llm})
+        failed = Analysis("high", "court_order_candidate", details={"llm": {"status": "failed", "action": "x"}})
+        items = [(event(1, 1, 5, "MOTION to Dismiss"), medium), (event(1, 2, 6, "ORDER"), failed)]
+        subject, text, rich = render_digest(items, INFO, NOW)
+        self.assertTrue(subject.startswith("[1 priority item] In re: OpenAI"))
+        self.assertIn("1 priority item · 1 worth a look · 1 case", text)
+        self.assertLess(text.index("PRIORITY"), text.index("WORTH A LOOK"))
+        self.assertIn("AI summary: Defendant moved to dismiss.", text)
+        self.assertIn("Action: File an opposition.", text)
+        self.assertIn('Deadline: Nov 5, 2026 — Opposition due ("Opposition due by 11/5/2026 <b>")', text)
+        self.assertEqual(text.count("Action:"), 1)
+        self.assertIn("AI summaries and actions are machine-generated", text)
+        self.assertIn("&lt;b&gt;", rich)
+        self.assertNotIn("<b>”", rich)
+        subject, _, _ = render_digest([(event(1, 1, 5, "MOTION"), medium)], INFO, NOW)
+        self.assertTrue(subject.startswith("[1 update]"))
 
     def test_document_only_change_label(self):
         before = {"description": "ORDER"}

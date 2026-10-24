@@ -59,6 +59,7 @@ Created by [sql/migrations/](../sql/migrations/) on first connection, applied on
 | `api_requests`, `api_control` | Persistent request ledger and throttle pause, per API |
 | `pipeline_runs` | Run history and reports |
 | `docket_info` | Case name, number, court and page path for digests, fetched once per docket |
+| `llm_calls` | Every LLM attempt or cache reuse: input hash, model, prompt version, tokens, latency, raw output. It is the audit trail, the response cache and the token budget ledger. |
 | `court_info` | Court citation (e.g. S.D.N.Y.) and full name, fetched once per court |
 
 The legacy tables (`dockets`, `entries`, `runs`, `changes`, `email_outbox`) are kept. `entries` is the comparison baseline. `email_outbox` provides once-only delivery.
@@ -83,4 +84,4 @@ Implement `Notifier.send(recipient, subject, body, key, html=None)` and return `
 
 Each stage already has the shape of an agent's job: claim rows in one state, do one task, write the result and the next state. When a task needs autonomy (for example, "read the order, find the deadline, cite the page"), that stage's implementation can become an agent behind the same interface. The rest of the pipeline does not change.
 
-The planned Milestone 2 design for the LLM analyzer is a deliberate middle step: one model call per event, strict JSON output, no tools, quoted source evidence that the code verifies, and a fallback to rules when verification fails.
+The LLM analyzer ([src/analyzers/llm.py](../src/analyzers/llm.py)) is a deliberate middle step: one model call per event, a versioned prompt ([src/llm/prompts/](../src/llm/prompts/)), strict JSON parsed by [src/llm/output.py](../src/llm/output.py), and no tools. The entry text is treated as untrusted data. Evidence quotes must appear in the text that was sent, and deadline dates must appear in their quote. The model may raise importance only with verified evidence and never lowers a rules `high`. Any failure falls back to rules. In `rules+shadow` mode the LLM result is stored under the analyzer name `llm-shadow`, which routing ignores.
