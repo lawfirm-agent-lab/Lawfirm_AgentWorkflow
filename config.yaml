@@ -7,7 +7,7 @@ check_interval_minutes: 30
 # Pipeline (src.pipeline.runner). Secrets never belong in this file.
 pipeline:
   analyzer: rules            # rules | llm | rules+shadow (ANALYZER variable overrides)
-  max_events_per_digest: 50
+  max_events_per_digest: 150 # grouped Other activity keeps heavy days short
   source_lag_seconds: 120    # skip the last two minutes, which may still be changing
 
 # CourtListener account limits are rolling: 5/minute, 50/hour, 125/day.
@@ -23,7 +23,7 @@ courtlistener:
 
 # LLM analyzer spend controls. Over any limit, events are scored by rules instead.
 llm:
-  max_calls_per_run: 40
+  max_calls_per_run: 200     # above a heavy filing day (58 events seen); overflow falls back to rules
   max_tokens_per_day: 400000  # input + output, UTC day
   max_input_chars: 12000      # entry text sent per call; long document text is truncated
   max_output_tokens: 800
