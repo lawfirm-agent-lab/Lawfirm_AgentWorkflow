@@ -9,7 +9,7 @@ from src.core.config import LLMLimits, Settings
 from src.core.models import SHADOW_ANALYZER, Event
 from src.llm.client import LLMError, LLMReply
 from src.llm.config import LLMSettings
-from src.llm.output import InvalidOutput, dates_in, parse, verify
+from src.llm.output import InvalidOutput, dates_in, found, normalize, parse, verify
 from src.pipeline.analyze import analyze
 from src.pipeline.route import latest_analysis
 from src.store.pipeline import PipelineStore
@@ -67,6 +67,18 @@ class OutputTests(unittest.TestCase):
         self.assertIsNone(verified["evidence"])
         self.assertEqual([d["date"] for d in verified["deadlines"]], ["2026-11-05"])
 
+    def test_quotes_with_ellipsis_and_pleading_line_numbers(self):
+        source = normalize("The Court GRANTS the motion and ORDERS as follows: 1. Fees. By close of business on "
+                           "Monday, October 19, 2026, the parties shall submit a protocol. PLAINTIFF'S MOTION IN "
+                           "LIMINE #4, 14 THIS DOCUMENT RELATES TO: TO EXCLUDE EVIDENCE 15 RELATED TO CONSTITUENT BOARDS")
+        self.assertTrue(found("The Court GRANTS the motion and ORDERS as follows: ... By close of business", source))
+        self.assertTrue(found("The Court GRANTS the motion … the parties shall submit a protocol", source))
+        self.assertFalse(found("the parties shall submit a protocol ... The Court GRANTS the motion", source))
+        self.assertFalse(found("The Court GRANTS the motion ... Fees", source))
+        self.assertFalse(found("The Court DENIES the motion ... By close of business", source))
+        self.assertTrue(found("PLAINTIFF’S MOTION IN LIMINE #4, THIS DOCUMENT RELATES TO: TO EXCLUDE EVIDENCE RELATED TO", source))
+        self.assertFalse(found("motion in limine #5", source))
+
     def test_entry_text_truncates_document_text(self):
         payload = {**ENTRY, "recap_documents": [{"attachment_number": None, "document_number": 7,
                                                  "description": "Main", "plain_text": "word " * 10000}]}
@@ -109,11 +121,18 @@ class AnalyzerTests(unittest.TestCase):
         self.assertIn("json", messages[0]["content"])
         self.assertEqual(self.calls("ok"), 1)
 
-    def test_unverified_evidence_cannot_raise(self):
+    def test_unverified_evidence_cannot_reach_priority(self):
         result = self.analyzer(output(evidence="Invented sentence")).analyze(self.event())
-        self.assertEqual(result.importance, "low")
-        self.assertFalse(result.details["llm"]["raised"])
+        self.assertEqual(result.importance, "medium")
+        self.assertTrue(result.details["llm"]["raised"])
+        self.assertEqual(result.reasons[-1], "AI rated medium (no quote verified)")
         self.assertEqual(result.details["llm"]["dropped_claims"], 1)
+        other = {**ENTRY, "description": "MOTION in Limine No. 4 to exclude evidence."}
+        result = self.analyzer(output(importance="medium", evidence="Invented")).analyze(self.event(other, ident="e2"))
+        self.assertEqual(result.importance, "medium")
+        routine = {**ENTRY, "description": "CERTIFICATE OF SERVICE."}
+        result = self.analyzer(output(importance="low", evidence=None)).analyze(self.event(routine, ident="e3"))
+        self.assertEqual(result.importance, "low")
 
     def test_model_never_lowers_rule_high(self):
         payload = {**ENTRY, "description": "ORDER setting trial for 1/6/2027."}
