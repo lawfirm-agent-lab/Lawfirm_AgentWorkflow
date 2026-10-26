@@ -5,7 +5,7 @@ from zoneinfo import ZoneInfo
 
 TIMEZONE = "America/Los_Angeles"
 COURT_PATTERNS = [
-    r"^(?:(?:minute|text|electronic|amended|scheduling|standing|final)\s+)*(?:order|judgment)\b",
+    r"^(?:(?:minute|text|electronic|amended|scheduling|standing|final|case\s+management|pretrial)\s+)*(?:order|judgment)\b",
     r"^memorandum(?:\s+opinion)?\s+and\s+order\b",
     r"^(?:notice|notification)\s+(?:by|from)\s+(?:the\s+)?court\b",
     r"^notice\s+of\s+(?:hearing|conference|trial)\b.*\b(?:issued|entered)\s+by\s+(?:the\s+)?court\b",

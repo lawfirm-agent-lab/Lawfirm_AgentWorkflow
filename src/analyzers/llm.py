@@ -1,7 +1,7 @@
 """LLM analyzer: rules first, then the model, then verification and a conservative merge.
 
-The model may raise importance only with a verified evidence quote and never lowers what
-the rules flagged. Any failure (budget, provider, empty or invalid output) returns the
+The model may raise an entry to high (Priority) only with a verified evidence quote, and to
+medium (Worth a look) with or without one; it never lowers what the rules flagged. Any failure (budget, provider, empty or invalid output) returns the
 rules result, so delivery never waits on the model. Every attempt is recorded in llm_calls.
 """
 import hashlib
@@ -16,7 +16,7 @@ from src.llm.client import LLMError
 from src.llm.output import InvalidOutput, parse, verify
 
 PROMPTS = Path(__file__).resolve().parents[1] / "llm" / "prompts"
-PROMPT_VERSION = "docket_entry_v4"
+PROMPT_VERSION = "docket_entry_v5"
 
 
 class Unavailable(Exception):
@@ -50,11 +50,14 @@ def merge(base, verified, llm):
     if verified is None:
         return Analysis(base.importance, base.category, None, base.reasons, details)
     proposed = verified["importance"]
-    effective = proposed if verified["evidence"] or importance_rank(proposed) <= importance_rank(base.importance) else base.importance
+    # Priority needs a quote found in the source. Worth-a-look does not: quotes from PDF text often
+    # fail on layout (line numbers, captions), and a wrong medium costs a reader one extra line.
+    effective = proposed if verified["evidence"] or importance_rank(proposed) <= importance_rank("medium") else "medium"
     final = max(base.importance, effective, key=importance_rank)
     reasons = tuple(base.reasons)
     if importance_rank(final) > importance_rank(base.importance):
-        reasons += (f'AI rated {final}: "{verified["evidence"]}"',)
+        reasons += (f'AI rated {final}: "{verified["evidence"]}"' if verified["evidence"]
+                    else f"AI rated {final} (no quote verified)",)
     details["llm"].update({k: verified[k] for k in ("importance", "category", "court_issued", "action",
                                                     "deadlines", "evidence", "confidence")})
     details["llm"]["raised"] = final != base.importance

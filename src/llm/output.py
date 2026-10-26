@@ -15,6 +15,10 @@ CATEGORIES = ("order", "judgment", "scheduling", "hearing_notice", "motion", "br
 MONTHS = {m: i + 1 for i, m in enumerate(("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"))}
 NUMERIC = re.compile(r"\b(\d{1,2})/(\d{1,2})/(\d{2}|\d{4})\b")
 ISO = re.compile(r"\b(\d{4})-(\d{2})-(\d{2})\b")
+ELLIPSIS = re.compile(r"\s*(?:\.\s?\.\s?\.|…)\s*")
+# Pleading paper numbers its lines (1-28), so extracted text reads "#4, 14 this document relates to: to exclude".
+LINE_NUMBER = re.compile(r"(?:(?<= )|^)\d{1,2}(?= |$)")
+MIN_PART = 15
 WORDS = re.compile(r"\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4})\b", re.I)
 
 
@@ -71,6 +75,25 @@ def normalize(value):
     return " ".join(value.lower().split())
 
 
+def found(quote, haystack):
+    """Whether a quote appears in the normalized source. Tolerates an ellipsis between exact
+    passages (each at least MIN_PART characters, in order) and pleading-paper line numbers."""
+    def contains(needle, text):
+        parts = [part for part in ELLIPSIS.split(needle) if part]
+        if not parts or any(len(part) < MIN_PART for part in parts) and len(parts) > 1:
+            return False
+        start = 0
+        for part in parts:
+            start = text.find(part, start)
+            if start < 0:
+                return False
+            start += len(part)
+        return True
+    needle = normalize(quote)
+    strip = lambda value: " ".join(LINE_NUMBER.sub("", value).split())
+    return contains(needle, haystack) or contains(strip(needle), strip(haystack))
+
+
 def dates_in(quote):
     found = set()
     for month, day, year in NUMERIC.findall(quote):
@@ -93,11 +116,11 @@ def verify(parsed, source):
     """Return (verified output, number of dropped claims)."""
     haystack, dropped = normalize(source), 0
     evidence = parsed["evidence"]
-    if evidence and normalize(evidence) not in haystack:
+    if evidence and not found(evidence, haystack):
         evidence, dropped = None, dropped + 1
     deadlines = []
     for item in parsed["deadlines"]:
-        if normalize(item["quote"]) in haystack and item["date"] in dates_in(item["quote"]):
+        if found(item["quote"], haystack) and item["date"] in dates_in(item["quote"]):
             deadlines.append(item)
         else:
             dropped += 1
