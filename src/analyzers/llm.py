@@ -16,7 +16,7 @@ from src.llm.client import LLMError
 from src.llm.output import InvalidOutput, parse, verify
 
 PROMPTS = Path(__file__).resolve().parents[1] / "llm" / "prompts"
-PROMPT_VERSION = "docket_entry_v3"
+PROMPT_VERSION = "docket_entry_v4"
 
 
 class Unavailable(Exception):

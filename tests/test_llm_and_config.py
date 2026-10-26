@@ -11,7 +11,7 @@ from src.analyzers.registry import create_analyzer
 from src.analyzers.rules import RulesAnalyzer
 from src.core.config import ConfigError, load_settings, secure_database_url
 from src.llm.client import LLMError, create_client
-from src.llm.config import LLMSettings
+from src.llm.config import LLMSettings, profile_env
 from src.pipeline import runner
 
 DEEPSEEK = {"LLM_PROVIDER": "openai_compatible", "LLM_MODEL": "any-model-name",
@@ -84,6 +84,24 @@ class LLMSettingsTests(unittest.TestCase):
             client(session).complete([])
         self.assertIn("max_tokens", str(error.exception))
         self.assertFalse(error.exception.transient)
+
+
+class ProfileTests(unittest.TestCase):
+    def test_profile_switches_provider_without_touching_defaults(self):
+        base = {**DEEPSEEK, "LLM_EXTRA_BODY": '{"thinking": {"type": "disabled"}}', "OPENROUTER_API_KEY": "sk-or-test"}
+        env = profile_env(base, "openrouter", "qwen/qwen3-235b-a22b")
+        settings = LLMSettings.from_env(env)
+        self.assertEqual((settings.base_url, settings.model, settings.api_key, settings.extra_body),
+                         ("https://openrouter.ai/api/v1", "qwen/qwen3-235b-a22b", "sk-or-test", {}))
+        self.assertEqual(base["LLM_API_KEY"], "sk-secret")
+        self.assertEqual(LLMSettings.from_env(profile_env(base)).api_key, "sk-secret")
+        self.assertEqual(LLMSettings.from_env(profile_env(base, extra_body="{}")).extra_body, {})
+
+    def test_profile_errors(self):
+        for args in (("openrouter", "m"), ("openrouter", None), ("unknown", "m")):
+            with self.subTest(args=args), self.assertRaises(ConfigError) as error:
+                profile_env(DEEPSEEK, *args)
+            self.assertNotIn("sk-secret", str(error.exception))
 
 
 class AnalyzerAndConfigTests(unittest.TestCase):

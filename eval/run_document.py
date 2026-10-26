@@ -3,6 +3,7 @@
 python eval/run_document.py --dotenv --pdf path/to/order.pdf --entry-number 39 --description "ORDER ..."
 python eval/run_document.py --dotenv --entries data/73132799_entries.json --entry-number 39
 python eval/run_document.py --dotenv --entries ... --entry-number 39 --extra-body '{"thinking": {"type": "enabled"}}'
+python eval/run_document.py --dotenv --pdf ... --entry-number 39 --profile openrouter --model qwen/qwen3-235b-a22b
 
 With --pdf the text comes from src.ingest.pdf (text layer, OCR for scanned pages); with
 --entries it comes from the CourtListener plain_text already saved in that file. Nothing
@@ -24,6 +25,7 @@ from src.analyzers.rules import RulesAnalyzer  # noqa: E402
 from src.core.config import load_settings  # noqa: E402
 from src.core.models import Event  # noqa: E402
 from src.ingest.pdf import extract_pdf  # noqa: E402
+from src.llm.config import PROFILES, profile_env  # noqa: E402
 from src.llm.document import pages_from_extraction, pages_from_plain_text  # noqa: E402
 from src.notify.render import render_digest  # noqa: E402
 from src.store.pipeline import PipelineStore  # noqa: E402
@@ -48,6 +50,8 @@ def main(argv=None):
     parser.add_argument("--docket-id", type=int, default=0)
     parser.add_argument("--case-name", default="")
     parser.add_argument("--extra-body", help="Override LLM_EXTRA_BODY for this run (JSON)")
+    parser.add_argument("--profile", choices=sorted(PROFILES), help="Use another provider (its key from e.g. OPENROUTER_API_KEY)")
+    parser.add_argument("--model", help="Model name as the provider spells it")
     parser.add_argument("--max-output-tokens", type=int, help="Override llm.max_document_output_tokens (thinking needs more)")
     parser.add_argument("--force-ocr", action="store_true")
     parser.add_argument("--db", default=str(ROOT / "data" / "eval.db"))
@@ -56,7 +60,7 @@ def main(argv=None):
     if args.dotenv:
         from dotenv import load_dotenv
         load_dotenv(ROOT / ".env")
-    env = dict(os.environ, **({"LLM_EXTRA_BODY": args.extra_body} if args.extra_body else {}))
+    env = profile_env(os.environ, args.profile, args.model, args.extra_body)
     if args.pdf:
         pages = pages_from_extraction(extract_pdf(args.pdf, force_ocr=args.force_ocr, layout=False))
         payload = {"entry_number": args.entry_number, "description": args.description, "recap_documents": []}
@@ -91,7 +95,7 @@ def main(argv=None):
     stem.with_suffix(".html").write_text(rich, encoding="utf-8")
     stats = analyzer.stats
     print(body)
-    print(f"\nstatus {result['status']} · pages read {result['pages_read']}/{result['pages']} · "
+    print(f"\nmodel {analyzer.llm.model} · status {result['status']} · pages read {result['pages_read']}/{result['pages']} · "
           f"tokens in {stats['input_tokens']} out {stats['output_tokens']} · cached {stats['cached']} · "
           f"dropped {stats['dropped_claims']} · pages corrected {stats['corrected_pages']}")
     for item in result.get("dropped") or []:
