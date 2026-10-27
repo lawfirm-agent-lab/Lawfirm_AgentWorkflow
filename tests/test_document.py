@@ -204,7 +204,7 @@ class RenderTests(unittest.TestCase):
         self.assertIn("    • Protective order due July 27. (p. 2)", text)
         self.assertIn("        DraftKings: Wants one. (p. 1)", text)
         self.assertIn("    • Trial — Interactive Games: Nov 1, 2027 · DraftKings: Jul 17, 2028 (p. 3)", text)
-        self.assertIn("Deadline: Jul 27, 2026 — Submit protective order", text)
+        self.assertIn("Deadline (passed): Jul 27, 2026 — Submit protective order", text)
         self.assertNotIn("— dup", text)
         self.assertIn("— entry only", text)
         self.assertIn("Action: Prepare the protective order.", text)
