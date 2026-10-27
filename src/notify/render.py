@@ -1,16 +1,20 @@
 """Digest rendering: one structure, plain-text and HTML views. All source text is escaped.
 
-Sections by importance: Priority (high) and Worth a look (medium) show full entries with any
-AI summary, action and verified deadlines, plus the page-cited document briefing when there is
-one; Other activity is one line per entry. Links point
-to human-readable CourtListener pages and, when available, the RECAP PDF.
+Layout, shortest path to "what happened and what do I do by when":
+- Upcoming deadlines: every verified future deadline in the digest, once per date and wording,
+  with the entries it comes from.
+- Priority (high): full entries with AI summary, action, deadlines and any document briefing.
+- Worth a look (medium): one line per entry (AI summary, else the description), headed by
+  filing type when three or more share one.
+- Other activity: grouped counts plus single lines, with one link to the whole range.
+Links point to human-readable CourtListener pages and, when available, the RECAP PDF.
 """
 import html
 import re
 from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo
 
-from src.notify.grouping import group, summary_line
+from src.notify.grouping import classify, group, summary_line
 
 SITE = "https://www.courtlistener.com"
 STORAGE = "https://storage.courtlistener.com/"
@@ -26,6 +30,12 @@ AI_NOTE = ("AI summaries and actions are machine-generated and may be wrong. Dea
 LATE_NOTE = ("NEW ON COURTLISTENER: filed earlier (date shown) but only now available on CourtListener, "
              "for example when an older entry is added to RECAP.")
 LATE_DAYS = 7
+MAX_REFS = 6
+SENTENCE_END = re.compile(r"\.\s+(?=[A-Z])")
+# Periods that do not end a sentence in court text ("Dr. Ward", "Charleston v. Meta", "No. 5").
+ABBREVIATIONS = {"dr", "mr", "mrs", "ms", "v", "vs", "no", "nos", "inc", "co", "corp", "ltd", "llc", "jr", "sr",
+                 "st", "u.s", "e.g", "i.e", "al", "ret", "hon", "dkt", "ecf", "ex", "fed", "r", "civ", "p", "cir"}
+MIN_HEADING = 3
 DOCUMENT_NOTE = ("Points read from the document are shown only when their quote, and any date, appears on "
                  "the page shown (p.); which event or party a date belongs to is the AI's reading.")
 
@@ -144,6 +154,7 @@ def build(items, infos):
             summary, action = document["overview"] or summary, document["action"] or action
             deadlines = document["deadlines"] + [d for d in deadlines if d["iso"] not in known]
         case[section(analysis.importance)].append({
+            "case": case["title"],
             "number": number if type(number) is int else None, "filed": filed(row.get("date_filed")),
             "label": change_label(event), "description": one_line(row.get("description")),
             "summary": summary, "action": action, "deadlines": deadlines, "document": document,
@@ -153,6 +164,65 @@ def build(items, infos):
         for key, _ in SECTIONS:
             case[key].sort(key=lambda e: (e["number"] is None, e["number"] or 0))
     return ordered
+
+
+def deadline_board(cases, today):
+    """Future deadlines from Priority and Worth a look, merged when the same wording repeats on
+    a date (e.g. one briefing schedule on 13 motions). Returns [{"date", "label", "refs"}]."""
+    board = {}
+    for case in cases:
+        for e in case["priority"] + case["review"]:
+            for d in e["deadlines"]:
+                try:
+                    day = date.fromisoformat(d.get("iso") or "")
+                except ValueError:
+                    continue
+                if day < today:
+                    continue
+                key = (day, " ".join(d["quote"].lower().split()).rstrip(". "))
+                item = board.setdefault(key, {"date": filed(d["iso"]), "what": d["what"], "quote": d["quote"], "refs": {}})
+                refs = item["refs"].setdefault(case["title"], [])
+                if e["number"] not in refs:
+                    refs.append(e["number"])
+    rows = []
+    for (day, _), item in sorted(board.items(), key=lambda kv: kv[0]):
+        parts = []
+        for title, numbers in item["refs"].items():
+            shown = ", ".join(f"#{n or '?'}" for n in numbers[:MAX_REFS])
+            shown += f" and {len(numbers) - MAX_REFS} more" if len(numbers) > MAX_REFS else ""
+            parts.append(f"{one_line(title, 32)} {shown}" if len(cases) > 1 else shown)
+        # A shared clerk line ("Responses due by 10/29/2026.") reads better than one entry's paraphrase.
+        many = sum(len(numbers) for numbers in item["refs"].values()) > 1
+        label = one_line(item["quote"], 90) if many else item["what"]
+        rows.append({"date": item["date"], "label": label, "refs": "; ".join(parts)})
+    return rows
+
+
+def review_blocks(entries):
+    """Worth-a-look entries as [(heading or None, entries)]: a heading for a filing type shared by
+    MIN_HEADING or more entries, then the rest without one."""
+    kinds = {}
+    for e in entries:
+        kinds.setdefault(classify(e["description"])[0] if e["description"] else None, []).append(e)
+    blocks = [(f"{kind[0].upper()}{kind[1:]} ({len(members)})", members) for kind, members in kinds.items()
+              if kind and len(members) >= MIN_HEADING]
+    grouped = {id(e) for _, members in blocks for e in members}
+    rest = [e for e in entries if id(e) not in grouped]
+    return blocks + ([(None, rest)] if rest else [])
+
+
+def short_line(e):
+    """Worth-a-look line: the first sentence of the AI summary (later sentences mostly repeat the
+    deadlines already on the board), else the description."""
+    return one_line(first_sentence(e["summary"]) if e["summary"] else e["description"], 160)
+
+
+def first_sentence(text):
+    for match in SENTENCE_END.finditer(text):
+        word = text[:match.start()].rsplit(" ", 1)[-1].lower().strip("(")
+        if word not in ABBREVIATIONS and len(word) > 1:
+            return text[:match.start() + 1]
+    return text
 
 
 def range_url(case):
@@ -185,12 +255,52 @@ def render_digest(items, infos=None, now=None, remaining=0):
     footer = FOOTER + ((AI_NOTE,) if any(e["summary"] for e in entries) else ()) + \
         ((DOCUMENT_NOTE,) if any(e["document"] for e in entries) else ()) + \
         ((LATE_NOTE,) if any(e["label"] == "NEW ON COURTLISTENER" for e in entries) else ())
-    return subject, text_view(cases, headline, stamp, footer), html_view(cases, headline, stamp, footer)
+    board = deadline_board(cases, now.date())
+    return subject, text_view(cases, headline, stamp, footer, board), html_view(cases, headline, stamp, footer, board)
 
 
-def text_view(cases, headline, stamp, footer):
+def full_text(e):
+    """Every detail of one entry (Priority, or a Worth-a-look entry with a document briefing)."""
+    lines = []
+    lines.append(f"  #{e['number'] or '?'} · Filed {e['filed']} · {e['label']}")
+    lines.append(f"  {one_line(e['description'], 240) if e['summary'] else e['description']}")
+    doc = e["document"]
+    if e["summary"]:
+        kind = f" ({doc['type']})" if doc and doc["type"] else ""
+        lines.append(f"  AI summary{kind}: {e['summary']}")
+    if doc:
+        lines += [f"    • {p['text']}{page(p['page'])}" for p in doc["points"]]
+        if doc["disputes"]:
+            lines.append("  Disputed:")
+        for d in doc["disputes"]:
+            lines.append(f"    • {d['issue']}")
+            lines += [f"        {p['party']}: {p['text']}{page(p['page'])}" for p in d["positions"]]
+        if doc["proposed"]:
+            lines.append("  Proposed dates (not yet set by the court):")
+        for g in doc["proposed"]:
+            pages = sorted({d["page"] for d in g["dates"] if type(d["page"]) is int})
+            lines.append(f"    • {g['event']} — " + " · ".join(f"{d['party']}: {d['date']}" for d in g["dates"])
+                         + (f" (p. {', '.join(map(str, pages))})" if pages else ""))
+    if e["action"]:
+        lines.append(f"  Action: {e['action']}")
+    for d in e["deadlines"]:
+        lines.append(f"  Deadline: {d['date']} — {d['what']} (\"{d['quote']}\"){page(d.get('page'))}")
+    if doc and doc["truncated"]:
+        lines.append(f"  Read pages 1–{doc['truncated'][0]} of {doc['truncated'][1]}; the rest was not analyzed.")
+    lines.append(f"  View on CourtListener: {e['url']}")
+    if e["pdf"]:
+        lines.append(f"  PDF: {e['pdf']}")
+    lines.append("")
+    return lines
+
+
+def text_view(cases, headline, stamp, footer, board=()):
     rule = "─" * 72
     lines = [f"{headline}    {stamp}", rule]
+    if board:
+        lines += ["", "UPCOMING DEADLINES", ""]
+        lines += [f"  {d['date']:<13} {d['label']} — {d['refs']}" for d in board]
+        lines += ["", rule]
     for key, title in SECTIONS:
         if not any(c[key] for c in cases):
             continue
@@ -198,61 +308,92 @@ def text_view(cases, headline, stamp, footer):
         for case in (c for c in cases if c[key]):
             if key == "other":
                 groups, singles, undescribed = group(case[key])
+                url, count = range_url(case)
                 lines.append(case["title"] + (f" ({case['meta']})" if case["meta"] else ""))
                 lines += [f"  • {summary_line(g)}" for g in groups]
                 for e in singles:
                     lines.append(f"  • #{e['number'] or '?'} · {e['filed']} · {e['label']} · {one_line(e['description'], 160)}")
-                    lines.append(f"    {e['url']}")
+                    if not url:
+                        lines.append(f"    {e['url']}")
                 if undescribed:
                     lines.append(f"  • {(f'{undescribed} entry' if undescribed == 1 else f'{undescribed} entries')} without a description yet")
-                url, count = range_url(case)
                 if url:
                     lines.append(f"  View these {count} entries on CourtListener: {url}")
                 lines.append("")
                 continue
             lines += [case["title"]] + ([case["meta"]] if case["meta"] else []) + [""]
-            for e in case[key]:
-                lines.append(f"  #{e['number'] or '?'} · Filed {e['filed']} · {e['label']}")
-                lines.append(f"  {e['description']}")
-                doc = e["document"]
-                if e["summary"]:
-                    kind = f" ({doc['type']})" if doc and doc["type"] else ""
-                    lines.append(f"  AI summary{kind}: {e['summary']}")
-                if doc:
-                    lines += [f"    • {p['text']}{page(p['page'])}" for p in doc["points"]]
-                    if doc["disputes"]:
-                        lines.append("  Disputed:")
-                    for d in doc["disputes"]:
-                        lines.append(f"    • {d['issue']}")
-                        lines += [f"        {p['party']}: {p['text']}{page(p['page'])}" for p in d["positions"]]
-                    if doc["proposed"]:
-                        lines.append("  Proposed dates (not yet set by the court):")
-                    for g in doc["proposed"]:
-                        pages = sorted({d["page"] for d in g["dates"] if type(d["page"]) is int})
-                        lines.append(f"    • {g['event']} — " + " · ".join(f"{d['party']}: {d['date']}" for d in g["dates"])
-                                     + (f" (p. {', '.join(map(str, pages))})" if pages else ""))
-                if e["action"]:
-                    lines.append(f"  Action: {e['action']}")
-                for d in e["deadlines"]:
-                    lines.append(f"  Deadline: {d['date']} — {d['what']} (\"{d['quote']}\"){page(d.get('page'))}")
-                if doc and doc["truncated"]:
-                    lines.append(f"  Read pages 1–{doc['truncated'][0]} of {doc['truncated'][1]}; the rest was not analyzed.")
-                lines.append(f"  View on CourtListener: {e['url']}")
-                if e["pdf"]:
-                    lines.append(f"  PDF: {e['pdf']}")
+            if key == "review":
+                for heading, members in review_blocks(case[key]):
+                    if heading:
+                        lines.append(f"  {heading}")
+                    for e in members:
+                        if e["document"]:
+                            lines += full_text(e)
+                            continue
+                        lines.append(f"  • #{e['number'] or '?'} · {e['filed']} · {short_line(e)}")
+                        lines.append(f"    {e['url']}")
                 lines.append("")
+                continue
+            for e in case[key]:
+                lines += full_text(e)
         lines.append(rule)
     lines += [""] + list(footer)
     return "\n".join(lines)
 
 
-def html_view(cases, headline, stamp, footer):
+def full_html(e, color):
+    """HTML counterpart of full_text()."""
+    esc = lambda value: html.escape(str(value), quote=True)
+    link = lambda url, text: f'<a href="{esc(url)}" style="color:#1a56db">{esc(text)}</a>'
+    muted = "color:#6b7280;font-size:13px"
+    links = link(e["url"], "View on CourtListener") + (" · " + link(e["pdf"], "PDF") if e["pdf"] else "")
+    ai = ""
+    doc = e["document"]
+    pg = lambda value: f' <span style="{muted}">p. {esc(value)}</span>' if type(value) is int else ""
+    if e["summary"]:
+        kind = f' <span style="{muted}">({esc(doc["type"])})</span>' if doc and doc["type"] else ""
+        ai += f'<p style="margin:4px 0"><b>AI summary:</b> {esc(e["summary"])}{kind}</p>'
+    if doc and doc["points"]:
+        ai += '<ul style="margin:4px 0;padding-left:20px">' + "".join(
+            f'<li style="margin:2px 0">{esc(p["text"])}{pg(p["page"])}</li>' for p in doc["points"]) + "</ul>"
+    if doc and doc["disputes"]:
+        ai += '<p style="margin:6px 0 2px"><b>Disputed</b></p><ul style="margin:0 0 4px;padding-left:20px">' + "".join(
+            f'<li style="margin:2px 0">{esc(d["issue"])}<br>' + "<br>".join(
+                f'<span style="{muted}">{esc(p["party"])}:</span> {esc(p["text"])}{pg(p["page"])}'
+                for p in d["positions"]) + "</li>" for d in doc["disputes"]) + "</ul>"
+    if doc and doc["proposed"]:
+        ai += (f'<p style="margin:6px 0 2px"><b>Proposed dates</b> <span style="{muted}">(not yet set by the court)</span></p>'
+               '<table style="border-collapse:collapse;font-size:13px;margin:0 0 4px">' + "".join(
+                   f'<tr><td style="padding:2px 12px 2px 0;vertical-align:top">{esc(g["event"])}</td><td style="padding:2px 0">'
+                   + "<br>".join(f'{esc(d["party"])}: {esc(d["date"])}{pg(d["page"])}' for d in g["dates"])
+                   + "</td></tr>" for g in doc["proposed"]) + "</table>")
+    if e["action"]:
+        ai += f'<p style="margin:4px 0"><b>Action:</b> {esc(e["action"])}</p>'
+    for d in e["deadlines"]:
+        ai += (f'<p style="margin:4px 0"><b>Deadline: {esc(d["date"])}</b> — {esc(d["what"])} '
+               f'<span style="{muted}">“{esc(d["quote"])}”</span>{pg(d.get("page"))}</p>')
+    if doc and doc["truncated"]:
+        ai += (f'<p style="margin:4px 0;{muted}">Read pages 1–{esc(doc["truncated"][0])} of '
+               f'{esc(doc["truncated"][1])}; the rest was not analyzed.</p>')
+    return (f'<div style="border-left:3px solid {color};padding:4px 0 4px 10px;margin:0 0 12px">'
+            f'<p style="margin:0;{muted}">#{esc(e["number"] or "?")} · Filed {esc(e["filed"])} · {esc(e["label"])}</p>'
+            f'<p style="margin:4px 0">{esc(one_line(e["description"], 240) if e["summary"] else e["description"])}</p>'
+            f'{ai}<p style="margin:4px 0">{links}</p></div>')
+
+
+def html_view(cases, headline, stamp, footer, board=()):
     esc = lambda value: html.escape(str(value), quote=True)
     link = lambda url, text: f'<a href="{esc(url)}" style="color:#1a56db">{esc(text)}</a>'
     muted = "color:#6b7280;font-size:13px"
     colors = {"priority": "#b91c1c", "review": "#b45309", "other": "#111827"}
     parts = [f'<div style="font-family:Arial,Helvetica,sans-serif;max-width:640px;color:#111827;line-height:1.45">',
              f'<p style="margin:0 0 4px;font-weight:bold">{esc(headline)}</p><p style="margin:0 0 16px;{muted}">{esc(stamp)}</p>']
+    if board:
+        parts.append('<h2 style="font-size:16px;margin:20px 0 8px">Upcoming deadlines</h2>'
+                     '<table style="border-collapse:collapse;font-size:14px">' + "".join(
+                         f'<tr><td style="padding:2px 12px 2px 0;vertical-align:top;white-space:nowrap"><b>{esc(d["date"])}</b></td>'
+                         f'<td style="padding:2px 0">{esc(d["label"])} <span style="{muted}">— {esc(d["refs"])}</span></td></tr>'
+                         for d in board) + "</table>")
     for key, title in SECTIONS:
         if not any(c[key] for c in cases):
             continue
@@ -276,39 +417,20 @@ def html_view(cases, headline, stamp, footer):
             parts.append(f'<h3 style="font-size:15px;margin:12px 0 2px">{link(case["url"], case["title"])}</h3>')
             if case["meta"]:
                 parts.append(f'<p style="margin:0 0 8px;{muted}">{esc(case["meta"])}</p>')
+            if key == "review":
+                for heading, members in review_blocks(case[key]):
+                    if heading:
+                        parts.append(f'<p style="margin:8px 0 2px;font-weight:bold">{esc(heading)}</p>')
+                    parts += [full_html(e, colors[key]) for e in members if e["document"]]
+                    compact = [e for e in members if not e["document"]]
+                    if compact:
+                        parts.append(f'<ul style="margin:0 0 8px;padding-left:20px">' + "".join(
+                            f'<li style="margin:3px 0"><span style="{muted}">#{esc(e["number"] or "?")} · {esc(e["filed"])}</span> '
+                            f'{esc(short_line(e))} {link(e["url"], "View")}' + (" · " + link(e["pdf"], "PDF") if e["pdf"] else "")
+                            + "</li>" for e in compact) + "</ul>")
+                continue
             for e in case[key]:
-                links = link(e["url"], "View on CourtListener") + (" · " + link(e["pdf"], "PDF") if e["pdf"] else "")
-                ai = ""
-                doc = e["document"]
-                pg = lambda value: f' <span style="{muted}">p. {esc(value)}</span>' if type(value) is int else ""
-                if e["summary"]:
-                    kind = f' <span style="{muted}">({esc(doc["type"])})</span>' if doc and doc["type"] else ""
-                    ai += f'<p style="margin:4px 0"><b>AI summary:</b> {esc(e["summary"])}{kind}</p>'
-                if doc and doc["points"]:
-                    ai += '<ul style="margin:4px 0;padding-left:20px">' + "".join(
-                        f'<li style="margin:2px 0">{esc(p["text"])}{pg(p["page"])}</li>' for p in doc["points"]) + "</ul>"
-                if doc and doc["disputes"]:
-                    ai += '<p style="margin:6px 0 2px"><b>Disputed</b></p><ul style="margin:0 0 4px;padding-left:20px">' + "".join(
-                        f'<li style="margin:2px 0">{esc(d["issue"])}<br>' + "<br>".join(
-                            f'<span style="{muted}">{esc(p["party"])}:</span> {esc(p["text"])}{pg(p["page"])}'
-                            for p in d["positions"]) + "</li>" for d in doc["disputes"]) + "</ul>"
-                if doc and doc["proposed"]:
-                    ai += (f'<p style="margin:6px 0 2px"><b>Proposed dates</b> <span style="{muted}">(not yet set by the court)</span></p>'
-                           '<table style="border-collapse:collapse;font-size:13px;margin:0 0 4px">' + "".join(
-                               f'<tr><td style="padding:2px 12px 2px 0;vertical-align:top">{esc(g["event"])}</td><td style="padding:2px 0">'
-                               + "<br>".join(f'{esc(d["party"])}: {esc(d["date"])}{pg(d["page"])}' for d in g["dates"])
-                               + "</td></tr>" for g in doc["proposed"]) + "</table>")
-                if e["action"]:
-                    ai += f'<p style="margin:4px 0"><b>Action:</b> {esc(e["action"])}</p>'
-                for d in e["deadlines"]:
-                    ai += (f'<p style="margin:4px 0"><b>Deadline: {esc(d["date"])}</b> — {esc(d["what"])} '
-                           f'<span style="{muted}">“{esc(d["quote"])}”</span>{pg(d.get("page"))}</p>')
-                if doc and doc["truncated"]:
-                    ai += (f'<p style="margin:4px 0;{muted}">Read pages 1–{esc(doc["truncated"][0])} of '
-                           f'{esc(doc["truncated"][1])}; the rest was not analyzed.</p>')
-                parts.append(f'<div style="border-left:3px solid {colors[key]};padding:4px 0 4px 10px;margin:0 0 12px">'
-                             f'<p style="margin:0;{muted}">#{esc(e["number"] or "?")} · Filed {esc(e["filed"])} · {esc(e["label"])}</p>'
-                             f'<p style="margin:4px 0">{esc(e["description"])}</p>{ai}<p style="margin:4px 0">{links}</p></div>')
+                parts.append(full_html(e, colors[key]))
     parts.append(f'<hr style="border:none;border-top:1px solid #e5e7eb;margin:20px 0">'
                  + "".join(f'<p style="margin:0 0 6px;{muted}">{esc(line)}</p>' for line in footer) + "</div>")
     return "".join(parts)
