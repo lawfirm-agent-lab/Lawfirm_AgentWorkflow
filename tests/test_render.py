@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 from src.core.config import Limits
 from src.core.models import Analysis, Event
 from src.core.ratelimit import RequestBudget
-from src.notify.render import pdf_url, render_digest
+from src.notify.render import first_sentence, pdf_url, render_digest
 from src.sources.courtlistener import CourtListenerSource, SourceError
 from src.store.pipeline import PipelineStore
 
@@ -79,16 +79,36 @@ class RenderTests(unittest.TestCase):
         subject, text, rich = render_digest(items, INFO, NOW)
         self.assertTrue(subject.startswith("[1 priority item] In re: OpenAI"))
         self.assertIn("1 priority item · 1 worth a look · 1 case", text)
+        self.assertLess(text.index("UPCOMING DEADLINES"), text.index("PRIORITY"))
         self.assertLess(text.index("PRIORITY"), text.index("WORTH A LOOK"))
-        self.assertIn("AI summary: Defendant moved to dismiss.", text)
-        self.assertIn("Action: File an opposition.", text)
-        self.assertIn('Deadline: Nov 5, 2026 — Opposition due ("Opposition due by 11/5/2026 <b>")', text)
-        self.assertEqual(text.count("Action:"), 1)
+        # Worth a look is one line per entry; its deadline moves to the board.
+        self.assertIn("  • #5 · Oct 22, 2026 · Defendant moved to dismiss.", text)
+        self.assertIn("  Nov 5, 2026   Opposition due — #5", text)
+        self.assertNotIn("Action:", text)
         self.assertIn("AI summaries and actions are machine-generated", text)
+        # A deadline shared by two entries is shown once, with the source wording (escaped in HTML).
+        items.append((event(1, 3, 7, "MOTION in limine"), medium))
+        _, text, rich = render_digest(items, INFO, NOW)
+        self.assertEqual(text.count("Nov 5, 2026  "), 1)
+        self.assertIn("Opposition due by 11/5/2026 <b> — #5, #7", text)
         self.assertIn("&lt;b&gt;", rich)
-        self.assertNotIn("<b>”", rich)
+        self.assertNotIn("<b> —", rich)
+        # Past deadlines are left off the board.
+        _, text, _ = render_digest(items, INFO, datetime(2026, 11, 7, tzinfo=timezone.utc))
+        self.assertNotIn("UPCOMING DEADLINES", text)
         subject, _, _ = render_digest([(event(1, 1, 5, "MOTION"), medium)], INFO, NOW)
         self.assertTrue(subject.startswith("[1 update]"))
+
+    def test_first_sentence(self):
+        cases = {"TUSD filed a motion. The clerk set a hearing.": "TUSD filed a motion.",
+                 "Snap moved to exclude Dr. Bryce Ward's opinions. Hearing set.": "Snap moved to exclude Dr. Bryce Ward's opinions.",
+                 "Joint stipulations in Charleston v. Meta, awaiting approval. More.": "Joint stipulations in Charleston v. Meta, awaiting approval.",
+                 "TUSD moved to exclude references; the clerk set deadlines.": "TUSD moved to exclude references; the clerk set deadlines.",
+                 "Filed under MIL No. 5 by the U.S. Government": "Filed under MIL No. 5 by the U.S. Government",
+                 "Exhibits A. B and C were filed.": "Exhibits A. B and C were filed."}
+        for text, expected in cases.items():
+            with self.subTest(text=text):
+                self.assertEqual(first_sentence(text), expected)
 
     def test_late_additions_are_labeled(self):
         late = Event("e1", "courtlistener", 1, 1, "added", {"entry_number": 1693, "date_filed": "2026-09-04",

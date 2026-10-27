@@ -227,7 +227,7 @@ class PipelineTests(unittest.TestCase):
         self.source.pages[DOCKET] = [entry(1), entry(2, "Certificate of service.")]
         self.run_all()
         self.assertEqual(sorted(m["To"] for m in self.sent), ["all@example.com", "lawyer@example.com"])
-        counts = {m["To"]: text(m).count("entry_gte=") for m in self.sent}
+        counts = {m["To"]: text(m).count(" · NEW") for m in self.sent}
         self.assertEqual(counts, {"all@example.com": 2, "lawyer@example.com": 1})
         by_recipient = {m["To"]: text(m) for m in self.sent}
         self.assertIn("OTHER ACTIVITY", by_recipient["all@example.com"])

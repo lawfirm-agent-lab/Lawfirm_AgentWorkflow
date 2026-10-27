@@ -221,8 +221,7 @@ class RenderTests(unittest.TestCase):
 
     def test_failed_briefing_falls_back_to_entry_reading(self):
         _, text, _ = self.render({"status": "failed"})
-        self.assertIn("AI summary: Entry summary.", text)
-        self.assertIn("Action: Entry action.", text)
+        self.assertIn("  • #39 · Jul 15, 2026 · Entry summary.", text)
         self.assertNotIn("page shown (p.)", text)
 
 
