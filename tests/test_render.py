@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 from src.core.config import Limits
 from src.core.models import Analysis, Event
 from src.core.ratelimit import RequestBudget
+from src.analyze.classifier import classify as classify_entry
 from src.notify.render import first_sentence, pdf_url, render_digest
 from src.sources.courtlistener import CourtListenerSource, SourceError
 from src.store.pipeline import PipelineStore
@@ -111,18 +112,47 @@ class RenderTests(unittest.TestCase):
                 self.assertEqual(first_sentence(text), expected)
 
     def test_late_additions_are_labeled(self):
-        late = Event("e1", "courtlistener", 1, 1, "added", {"entry_number": 1693, "date_filed": "2026-09-04",
-                                                           "description": "RULE 56.1 STATEMENT."}, None, "2026-10-23T22:00:00+00:00")
+        seen = "2026-10-23T22:00:00+00:00"
+        late = Event("e1", "courtlistener", 1, 1, "added", {"entry_number": 1693, "date_filed": "2026-10-10",
+                                                           "description": "RULE 56.1 STATEMENT."}, None, seen)
         fresh = Event("e2", "courtlistener", 1, 2, "added", {"entry_number": 2237, "date_filed": "2026-10-23",
-                                                            "description": "RESPONSE."}, None, "2026-10-23T22:00:00+00:00")
+                                                            "description": "RESPONSE."}, None, seen)
         unknown = Event("e3", "courtlistener", 1, 3, "added", {"entry_number": 5, "description": "NOTICE."}, None, "bad")
         _, text, _ = render_digest([(late, LOW), (fresh, LOW), (unknown, LOW)], INFO, NOW)
-        self.assertIn("#1693 · Sep 4, 2026 · NEW ON COURTLISTENER", text)
+        self.assertIn("#1693 · Oct 10, 2026 · NEW ON COURTLISTENER", text)
         self.assertIn("#2237 · Oct 23, 2026 · NEW ·", text)
         self.assertIn("#5 · date unknown · NEW ·", text)
         self.assertIn("only now available on CourtListener", text)
         _, text, _ = render_digest([(fresh, LOW)], INFO, NOW)
         self.assertNotIn("only now available", text)
+
+    def test_backfill_is_counted_not_ranked(self):
+        seen = "2026-10-27T20:00:00+00:00"
+        old = lambda n, filed, kind: Event(f"b{n}", "courtlistener", 1, n, "added",
+                                           {"entry_number": n, "date_filed": filed, "description": kind}, None, seen)
+        items = [(old(75, "2022-11-10", "CASE MANAGEMENT ORDER NO. 1."), HIGH),
+                 (old(77, "2022-11-12", "MOTION to appoint."), Analysis("medium", "motion", "A motion.")),
+                 (old(80, "2023-01-05", "NOTICE of appearance."), LOW)]
+        subject, text, rich = render_digest(items, INFO, NOW)
+        self.assertEqual(subject, "[3 older filings added] In re: OpenAI, Inc. Copyright Infringement Litigation — Oct 22")
+        self.assertIn("3 older filings newly on CourtListener · 1 case", text)
+        self.assertNotIn("PRIORITY", text)
+        self.assertIn("3 older entries, filed Nov 10, 2022 – Jan 5, 2023: 1 court order or notice, "
+                      "1 party motion or brief, 1 other filing", text)
+        self.assertIn("entry_gte=75&entry_lte=80", text)
+        self.assertIn("Older filings newly on CourtListener", rich)
+        # A fresh order in the same digest still leads.
+        fresh = Event("f1", "courtlistener", 1, 9, "added", {"entry_number": 2300, "date_filed": "2026-10-22",
+                                                            "description": "ORDER granting motion."}, None, seen)
+        subject, text, _ = render_digest(items + [(fresh, HIGH)], INFO, NOW)
+        self.assertTrue(subject.startswith("[1 priority item]"))
+        self.assertLess(text.index("PRIORITY"), text.index("OLDER FILINGS"))
+
+    def test_pro_hac_vice_orders_are_not_rule_priority(self):
+        for description in ("ORDER FOR ADMISSION PRO HAC VICE granting (983) Motion",
+                            "ORDER GRANTING MOTION TO ADMIT COUNSEL PRO HAC VICE granting (966) Motion"):
+            self.assertFalse(classify_entry({"description": description}, detected_change=True)["important"])
+        self.assertTrue(classify_entry({"description": "ORDER granting motion to compel"}, detected_change=True)["important"])
 
     def test_document_only_change_label(self):
         before = {"description": "ORDER"}

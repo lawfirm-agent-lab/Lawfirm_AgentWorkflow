@@ -7,6 +7,9 @@ Layout, shortest path to "what happened and what do I do by when":
 - Worth a look (medium): one line per entry (AI summary, else the description), headed by
   filing type when three or more share one.
 - Other activity: grouped counts plus single lines, with one link to the whole range.
+- Older filings newly on CourtListener: entries filed more than BACKFILL_DAYS before CourtListener
+  changed them (bulk RECAP uploads of a case's history). One count line per case, never counted
+  as priority or put on the deadline board.
 Links point to human-readable CourtListener pages and, when available, the RECAP PDF.
 """
 import html
@@ -30,6 +33,9 @@ AI_NOTE = ("AI summaries and actions are machine-generated and may be wrong. Dea
 LATE_NOTE = ("NEW ON COURTLISTENER: filed earlier (date shown) but only now available on CourtListener, "
              "for example when an older entry is added to RECAP.")
 LATE_DAYS = 7
+BACKFILL_DAYS = 30
+BACKFILL_NOTE = ("Older filings: entries filed more than a month before they appeared on CourtListener, usually "
+                 "a bulk upload of the case's history. They are counted, not ranked.")
 MAX_REFS = 6
 SENTENCE_END = re.compile(r"\.\s+(?=[A-Z])")
 # Periods that do not end a sentence in court text ("Dr. Ward", "Charleston v. Meta", "No. 5").
@@ -80,15 +86,19 @@ def pdf_url(payload):
     return None
 
 
+def days_late(event):
+    """Days between filing and CourtListener's change; large values mean a RECAP backfill."""
+    try:
+        return (datetime.fromisoformat(event.source_modified_at).date()
+                - date.fromisoformat(event.payload.get("date_filed"))).days
+    except (TypeError, ValueError):
+        return None
+
+
 def change_label(event):
     if event.kind == "added":
         # An entry filed long before CourtListener changed it was added late (RECAP backfill), not filed today.
-        try:
-            late = (datetime.fromisoformat(event.source_modified_at).date()
-                    - date.fromisoformat(event.payload.get("date_filed"))).days > LATE_DAYS
-        except (TypeError, ValueError):
-            late = False
-        return "NEW ON COURTLISTENER" if late else "NEW"
+        return "NEW ON COURTLISTENER" if (days_late(event) or 0) > LATE_DAYS else "NEW"
     before = event.before or {}
     if before.get("description") != event.payload.get("description"):
         return "UPDATED · description changed"
@@ -135,8 +145,8 @@ def page(value):
     return f" (p. {value})" if type(value) is int else ""
 
 
-def build(items, infos):
-    """Group items into cases -> sections -> entries, in reading order."""
+def build(items, infos, today=None):
+    """Group items into cases -> sections -> entries, in reading order. today marks past deadlines."""
     cases = {}
     for event, analysis in items:
         info = infos.get(event.docket_id) or {}
@@ -144,7 +154,7 @@ def build(items, infos):
         case = cases.setdefault(event.docket_id, {
             "title": one_line(info.get("case_name")) or f"Docket {event.docket_id}",
             "meta": " · ".join(one_line(x) for x in (info.get("docket_number"), info.get("court")) if x),
-            "url": docket_url(event.docket_id, info), **{key: [] for key, _ in SECTIONS}})
+            "url": docket_url(event.docket_id, info), "backfill": [], **{key: [] for key, _ in SECTIONS}})
         number = row.get("entry_number")
         action, deadlines = ai_fields(analysis)
         summary, document = one_line(analysis.summary) or None, document_fields(analysis)
@@ -153,15 +163,20 @@ def build(items, infos):
             known = {d["iso"] for d in document["deadlines"]}
             summary, action = document["overview"] or summary, document["action"] or action
             deadlines = document["deadlines"] + [d for d in deadlines if d["iso"] not in known]
-        case[section(analysis.importance)].append({
+        for d in deadlines:
+            d["passed"] = bool(today and (d.get("iso") or "9999") < today.isoformat())
+        backfill = (days_late(event) or 0) > BACKFILL_DAYS
+        case["backfill" if backfill else section(analysis.importance)].append({
+            "importance": analysis.importance,
             "case": case["title"],
             "number": number if type(number) is int else None, "filed": filed(row.get("date_filed")),
+            "iso_filed": row.get("date_filed") if isinstance(row.get("date_filed"), str) else None,
             "label": change_label(event), "description": one_line(row.get("description")),
             "summary": summary, "action": action, "deadlines": deadlines, "document": document,
             "url": entry_url(event.docket_id, info, number), "pdf": pdf_url(row)})
     ordered = sorted(cases.values(), key=lambda c: c["title"].lower())
     for case in ordered:
-        for key, _ in SECTIONS:
+        for key in [key for key, _ in SECTIONS] + ["backfill"]:
             case[key].sort(key=lambda e: (e["number"] is None, e["number"] or 0))
     return ordered
 
@@ -208,7 +223,8 @@ def review_blocks(entries):
               if kind and len(members) >= MIN_HEADING]
     grouped = {id(e) for _, members in blocks for e in members}
     rest = [e for e in entries if id(e) not in grouped]
-    return blocks + ([(None, rest)] if rest else [])
+    # Under headed groups, an unheaded tail would read as part of the last group.
+    return blocks + ([(f"Other ({len(rest)})" if blocks else None, rest)] if rest else [])
 
 
 def short_line(e):
@@ -225,36 +241,54 @@ def first_sentence(text):
     return text
 
 
-def range_url(case):
-    numbers = [e["number"] for e in case["other"] if e["number"] is not None]
+def range_url(case, key="other"):
+    numbers = [e["number"] for e in case[key] if e["number"] is not None]
     if len(numbers) < 2:
         return None, 0
-    return f"{case['url']}?entry_gte={min(numbers)}&entry_lte={max(numbers)}", len(case["other"])
+    return f"{case['url']}?entry_gte={min(numbers)}&entry_lte={max(numbers)}", len(case[key])
+
+
+def backfill_line(case):
+    """One line per case for older filings: how many, which dates, and what kind."""
+    entries = case["backfill"]
+    days = sorted(e["iso_filed"] for e in entries if e["iso_filed"])
+    span = f", filed {filed(days[0])} – {filed(days[-1])}" if days else ""
+    kinds = (("high", "court order or notice", "court orders or notices"),
+             ("medium", "party motion or brief", "party motions and briefs"), ("low", "other filing", "other filings"))
+    counts = [f"{n} {one if n == 1 else many}" for level, one, many in kinds
+              if (n := sum(e["importance"] == level for e in entries))]
+    noun = "older entry" if len(entries) == 1 else "older entries"
+    return f"{len(entries)} {noun}{span}: " + ", ".join(counts)
 
 
 def render_digest(items, infos=None, now=None, remaining=0):
     """items: [(Event, Analysis)] for one recipient; remaining: pending items left for the next
     digest. Returns (subject, text, html)."""
-    cases = build(items, infos or {})
     now = (now or datetime.now(timezone.utc)).astimezone(TIMEZONE)
+    cases = build(items, infos or {}, now.date())
     counts = {key: sum(len(c[key]) for c in cases) for key, _ in SECTIONS}
-    lead = next((c for key in ("priority", "review") for c in cases if c[key]), cases[0])
+    older = sum(len(c["backfill"]) for c in cases)
+    lead = next((c for key in ("priority", "review", "other") for c in cases if c[key]), cases[0])
     if counts["priority"]:
         label = plural(counts["priority"], "priority item")
-    else:
+    elif sum(counts.values()):
         label = plural(sum(counts.values()), "update")
+    else:
+        label = f"{plural(older, 'older filing')} added"
     more = f" +{plural(len(cases) - 1, 'case')}" if len(cases) > 1 else ""
     subject = one_line(f"[{label}] {one_line(lead['title'], 70)}{more} — {now:%b} {now.day}")
     stamp = f"{now:%b} {now.day}, {now.year}, {now:%I}".replace(", 0", ", ") + f":{now:%M %p} PT"
     words = {"priority": "priority item", "review": "worth a look", "other": "other filing"}
     parts = [plural(counts[k], words[k]) if k != "review" else f"{counts[k]} worth a look" for k, _ in SECTIONS if counts[k]]
+    parts += [f"{plural(older, 'older filing')} newly on CourtListener"] if older else []
     headline = " · ".join(parts + [plural(len(cases), "case")])
     if remaining:
         headline += f" · {remaining} more in the next digest"
     entries = [e for c in cases for key, _ in SECTIONS for e in c[key]]
     footer = FOOTER + ((AI_NOTE,) if any(e["summary"] for e in entries) else ()) + \
         ((DOCUMENT_NOTE,) if any(e["document"] for e in entries) else ()) + \
-        ((LATE_NOTE,) if any(e["label"] == "NEW ON COURTLISTENER" for e in entries) else ())
+        ((LATE_NOTE,) if any(e["label"] == "NEW ON COURTLISTENER" for e in entries) else ()) + \
+        ((BACKFILL_NOTE,) if older else ())
     board = deadline_board(cases, now.date())
     return subject, text_view(cases, headline, stamp, footer, board), html_view(cases, headline, stamp, footer, board)
 
@@ -284,7 +318,7 @@ def full_text(e):
     if e["action"]:
         lines.append(f"  Action: {e['action']}")
     for d in e["deadlines"]:
-        lines.append(f"  Deadline: {d['date']} — {d['what']} (\"{d['quote']}\"){page(d.get('page'))}")
+        lines.append(f"  Deadline{' (passed)' if d.get('passed') else ''}: {d['date']} — {d['what']} (\"{d['quote']}\"){page(d.get('page'))}")
     if doc and doc["truncated"]:
         lines.append(f"  Read pages 1–{doc['truncated'][0]} of {doc['truncated'][1]}; the rest was not analyzed.")
     lines.append(f"  View on CourtListener: {e['url']}")
@@ -337,6 +371,15 @@ def text_view(cases, headline, stamp, footer, board=()):
             for e in case[key]:
                 lines += full_text(e)
         lines.append(rule)
+    if any(c["backfill"] for c in cases):
+        lines += ["", "OLDER FILINGS NEWLY ON COURTLISTENER", ""]
+        for case in (c for c in cases if c["backfill"]):
+            url, _ = range_url(case, "backfill")
+            lines.append(case["title"] + (f" ({case['meta']})" if case["meta"] else ""))
+            lines.append(f"  {backfill_line(case)}")
+            lines += [f"  View them on CourtListener: {url}"] if url else []
+            lines.append("")
+        lines.append(rule)
     lines += [""] + list(footer)
     return "\n".join(lines)
 
@@ -370,7 +413,7 @@ def full_html(e, color):
     if e["action"]:
         ai += f'<p style="margin:4px 0"><b>Action:</b> {esc(e["action"])}</p>'
     for d in e["deadlines"]:
-        ai += (f'<p style="margin:4px 0"><b>Deadline: {esc(d["date"])}</b> — {esc(d["what"])} '
+        ai += (f'<p style="margin:4px 0"><b>Deadline{" (passed)" if d.get("passed") else ""}: {esc(d["date"])}</b> — {esc(d["what"])} '
                f'<span style="{muted}">“{esc(d["quote"])}”</span>{pg(d.get("page"))}</p>')
     if doc and doc["truncated"]:
         ai += (f'<p style="margin:4px 0;{muted}">Read pages 1–{esc(doc["truncated"][0])} of '
@@ -431,6 +474,12 @@ def html_view(cases, headline, stamp, footer, board=()):
                 continue
             for e in case[key]:
                 parts.append(full_html(e, colors[key]))
+    if any(c["backfill"] for c in cases):
+        parts.append('<h2 style="font-size:16px;margin:20px 0 8px;color:#6b7280">Older filings newly on CourtListener</h2>')
+        for case in (c for c in cases if c["backfill"]):
+            url, _ = range_url(case, "backfill")
+            parts.append(f'<p style="margin:8px 0 2px"><b>{esc(case["title"])}</b></p>'
+                         f'<p style="margin:0 0 8px">{esc(backfill_line(case))}' + (f' {link(url, "View")}' if url else "") + "</p>")
     parts.append(f'<hr style="border:none;border-top:1px solid #e5e7eb;margin:20px 0">'
                  + "".join(f'<p style="margin:0 0 6px;{muted}">{esc(line)}</p>' for line in footer) + "</div>")
     return "".join(parts)
