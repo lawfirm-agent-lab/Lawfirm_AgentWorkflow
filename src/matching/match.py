@@ -8,6 +8,7 @@ The model proposes a tier, reasons and an email. Code then enforces:
 - a case without readable document text is "insufficient" and is never sent to the model.
 """
 import re
+from datetime import date
 
 from src.llm.output import InvalidOutput, text
 from src.matching.profiles import choice, load, objects, strings
@@ -67,11 +68,27 @@ def insufficient(reason):
     return {"tier": "insufficient", "summary": reason, "matches": [], "gaps": [], "email": None, "notes": []}
 
 
-def rank_key(result):
-    """Tier first, then the amount of verified evidence, then how much of it is direct."""
-    match = result["match"]
+def score(match, profile, case, today=None):
+    """Order within a tier: relevance (verified evidence, expertise the document itself asks for)
+    plus importance (how technical the case is, how recently it was filed). Every part is shown."""
+    today = today or date.today()
     direct = sum(m["strength"] == "direct" for m in match["matches"])
-    return ORDER[match["tier"]], -direct, -len(match["matches"]), result["case"]["name"]
+    related = len(match["matches"]) - direct
+    stated = any(m["point"].get("basis") == "stated" for m in match["matches"])
+    issues = (profile or {}).get("issues") or []
+    technical = round(sum(i["technical"] for i in issues) / len(issues), 1) if issues else 0
+    try:
+        age = (today - date.fromisoformat(case.get("filed") or "")).days
+    except ValueError:
+        age = None
+    recent = 1 if age is not None and age <= 90 else 0.5 if age is not None and age <= 365 else 0
+    parts = {"evidence": 2 * direct + related, "stated": 1 if stated else 0, "technical": technical, "recent": recent}
+    return {"total": round(sum(parts.values()), 1), "parts": parts, "direct": direct, "related": related, "age_days": age}
+
+
+def rank_key(result):
+    """Tier first, then the score; ties by name so the order is stable."""
+    return ORDER[result["match"]["tier"]], -result["score"]["total"], result["case"]["name"]
 
 
 def rank(results):

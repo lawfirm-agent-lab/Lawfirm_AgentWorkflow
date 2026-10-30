@@ -5,6 +5,7 @@ Runs on 127.0.0.1 only. The LLM key stays in the server's environment and never 
 import json
 import re
 import tempfile
+import time
 from pathlib import Path
 
 from flask import Flask, Response, abort, jsonify, redirect, render_template, request, url_for
@@ -13,7 +14,8 @@ from markupsafe import escape
 from src.core.config import ConfigError
 from src.llm.config import LLMSettings
 from src.matching.report import render
-from src.matching.run import ROOT, case_status
+from src.matching.run import LOCAL_LIMITS, ROOT, case_status
+from src.store.pipeline import PipelineStore
 from src.web.jobs import RUN_ID, Jobs
 
 MAX_UPLOAD = 10 * 1024 * 1024
@@ -30,10 +32,23 @@ def create_app(env, data_dir=ROOT / "data" / "matching", cases_file=ROOT / "eval
         settings, config_error = LLMSettings.from_env(env), None
     except ConfigError as exc:
         settings, config_error = None, str(exc)
-    jobs = Jobs(data_dir / "runs", settings, cases, ROOT, limit, data_dir / "cache")
+    jobs = Jobs(data_dir / "runs", settings, cases, ROOT, limit, data_dir, env)
+    has_token = bool((env.get("COURTLISTENER_TOKEN") or "").strip())
 
     def samples():
         return sorted(p.name for p in samples_dir.glob("*.pdf"))
+
+    def requests_today():
+        """CourtListener requests made by local matching runs in the last 24 hours (their own ledger)."""
+        path = data_dir / "courtlistener.db"
+        if not path.exists():
+            return 0
+        store = PipelineStore(str(path))
+        try:
+            return store.execute("SELECT COUNT(*) AS n FROM api_requests WHERE api='courtlistener' AND attempted_at>?",
+                                 (time.time() - 86400,)).fetchone()["n"]
+        finally:
+            store.close()
 
     def checked(run_id):
         if not re.fullmatch(RUN_ID, run_id) or jobs.status(run_id) is None:
@@ -45,7 +60,8 @@ def create_app(env, data_dir=ROOT / "data" / "matching", cases_file=ROOT / "eval
         pool = [{**c, "status": case_status(c, ROOT)} for c in cases]
         return render_template("index.html", samples=samples(), cases=pool, history=jobs.history(),
                                busy=jobs.busy(), config_error=config_error, error=request.args.get("error"),
-                               model=settings and settings.model)
+                               model=settings and settings.model, has_token=has_token, used=requests_today(),
+                               cap=LOCAL_LIMITS.per_day, keep=jobs.keep)
 
     @app.post("/runs")
     def start():
@@ -63,7 +79,7 @@ def create_app(env, data_dir=ROOT / "data" / "matching", cases_file=ROOT / "eval
                 path, name = samples_dir / sample, sample
             else:
                 return redirect(url_for("index", error="Upload a CV PDF or choose a sample CV."))
-            run_id = jobs.start(path, name)
+            run_id = jobs.start(path, name, find=has_token and request.form.get("find") == "on")
         if run_id is None:
             return redirect(url_for("index", error="Another run is in progress; wait for it to finish."))
         return redirect(url_for("progress", run_id=run_id))

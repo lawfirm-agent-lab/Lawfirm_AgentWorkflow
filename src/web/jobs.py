@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from src.llm.client import LLMError
-from src.matching.run import Model, run
+from src.matching.run import Model, make_search, run
 
 RUN_ID = r"\d{8}-\d{6}-[0-9a-f]{6}"
 
@@ -32,9 +32,9 @@ def write_json(path, data):
 
 
 class Jobs:
-    def __init__(self, root, settings, cases, base, limit, cache_dir):
+    def __init__(self, root, settings, cases, base, limit, data_dir, env, keep=6):
         self.root, self.settings, self.cases, self.base, self.limit = root, settings, cases, base, limit
-        self.cache_dir = cache_dir
+        self.data_dir, self.env, self.keep = data_dir, env, keep
         self.lock = threading.Lock()
         self.active = None
         root.mkdir(parents=True, exist_ok=True)
@@ -62,7 +62,7 @@ class Jobs:
     def busy(self):
         return self.active is not None
 
-    def start(self, cv_source, cv_name):
+    def start(self, cv_source, cv_name, find=False):
         """Copy the CV into a new run folder and start the pipeline. Returns the run id or None if busy."""
         with self.lock:
             if self.active:
@@ -71,9 +71,10 @@ class Jobs:
             folder = self.folder(run_id)
             folder.mkdir()
             shutil.copyfile(cv_source, folder / "cv.pdf")
-            total = 2 * len(self.cases) + 1
+            # Estimate: CV, then (search plan, 3 searches, screening), then profile + match per case.
+            total = 1 + (5 if find else 0) + 2 * (len(self.cases) + (self.keep if find else 0))
             write_json(folder / "status.json", {"state": "queued", "cv": cv_name, "model": self.settings.model,
-                                                "cases": len(self.cases), "total": total, "steps": [],
+                                                "find": find, "cases": len(self.cases), "total": total, "steps": [],
                                                 "error": None, "started": now(), "finished": None})
             self.active = run_id
         threading.Thread(target=self.work, args=(run_id,), daemon=True).start()
@@ -85,13 +86,17 @@ class Jobs:
 
         def log(item):
             status["steps"].append(item)
+            if "total_hint" in item:  # Screening decided how many found cases will be read.
+                status["total"] = len(status["steps"]) + 2 * (len(self.cases) + item["total_hint"])
             write_json(folder / "status.json", status)
 
         try:
             status["state"] = "running"
             write_json(folder / "status.json", status)
-            model = Model(self.settings, self.cache_dir)
-            experts = run(model, [folder / "cv.pdf"], self.cases, self.base, self.limit, log)
+            model = Model(self.settings, self.data_dir / "cache")
+            search = make_search(self.env, self.data_dir) if status.get("find") else None
+            experts = run(model, [folder / "cv.pdf"], self.cases, self.base, self.limit, log, search, self.keep,
+                          self.data_dir / "pdfs")
             write_json(folder / "result.json", experts)
             status.update(state="done", stats=model.stats)
         except LLMError as exc:

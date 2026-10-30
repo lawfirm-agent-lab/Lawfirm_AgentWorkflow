@@ -3,7 +3,7 @@
 {% block body %}
 <nav><a href="{{ url_for('index') }}">← Home</a></nav>
 <h1>Matching run</h1>
-<div class="muted">CV: {{ status.cv }} · {{ status.cases }} cases · run {{ run_id }}</div>
+<div class="muted">CV: {{ status.cv }} · {{ status.cases }} fixed cases{% if status.find %} + cases found on CourtListener{% endif %} · run {{ run_id }}</div>
 
 <div class="bar"><div id="bar" style="width:0"></div></div>
 <div id="state" class="run">Starting…</div>
@@ -11,11 +11,14 @@
 <div id="error" class="card error" hidden></div>
 
 <script>
-var STAGES = {case: "Case profile", expert: "Read CV", match: "Match"};
+var STAGES = {expert: "Read CV", plan: "Write searches", search: "Search CourtListener", screen: "Screen candidates",
+              case: "Case profile", match: "Match"};
+var NEXT = {expert: "Finding cases…", plan: "Searching CourtListener…", search: "Searching / downloading complaints…",
+            screen: "Reading the first case…", case: "Matching the CV to this case…", match: "Reading the next case…"};
 function text(tag, value, cls) { var el = document.createElement(tag); el.textContent = value; if (cls) el.className = cls; return el; }
 function show(s) {
   var done = s.steps.length;
-  document.getElementById("bar").style.width = Math.round(100 * done / s.total) + "%";
+  document.getElementById("bar").style.width = Math.min(100, Math.round(100 * done / s.total)) + "%";
   var list = document.getElementById("steps");
   list.replaceChildren();
   s.steps.forEach(function (step) {
@@ -24,8 +27,8 @@ function show(s) {
     if (step.cached) li.append(text("span", " (cached)", "muted"));
     list.append(li);
   });
-  var next = s.steps.length < {{ status.cases }} ? "Building case profiles…"
-           : s.steps.length === {{ status.cases }} ? "Reading the CV…" : "Matching the CV to each case…";
+  var last = s.steps.length ? s.steps[s.steps.length - 1].stage : null;
+  var next = !last ? "Reading the CV…" : last === "expert" && !s.find ? "Reading the first case…" : NEXT[last];
   var state = document.getElementById("state");
   if (s.state === "failed") {
     state.textContent = "Failed"; state.className = "warn";

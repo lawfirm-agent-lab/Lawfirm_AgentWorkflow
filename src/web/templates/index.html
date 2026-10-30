@@ -13,11 +13,20 @@
   <div class="or">or use a sample CV</div>
   {% for s in samples %}<label><input type="radio" name="sample" value="{{ s }}"> {{ s }}</label>{% endfor %}
   {% endif %}
+  <div class="or">Cases</div>
+  {% if has_token %}
+  <label><input type="checkbox" name="find" checked> Find new cases on CourtListener for this CV
+    <span class="muted">(3 searches of complaints filed in the last year, screened by the model; the {{ keep }} most relevant are read in full. About 2–3 minutes.)</span></label>
+  <div class="muted">CourtListener requests by local runs in the last 24 hours: {{ used }} of {{ cap }} (the cloud pipeline shares the account's 125 a day). Repeating a search on the same day uses the cache.</div>
+  {% else %}
+  <div class="muted">Set COURTLISTENER_TOKEN to let the system find new cases. Only the case pool below is used.</div>
+  {% endif %}
   <p><button type="submit" {% if busy or config_error %}disabled{% endif %}>Run matching</button>
   {% if busy %}<span class="run"> A run is in progress.</span>{% endif %}</p>
 </form>
 
-<h2>2. Case pool ({{ cases|length }})</h2>
+<h2>2. Fixed case pool ({{ cases|length }})</h2>
+<div class="muted">Always matched, in addition to the cases found for the CV.</div>
 <div class="wrap"><table>
   <thead><tr><th>Case</th><th>Court</th><th>Filed</th><th>Document</th><th>Status</th></tr></thead>
   <tbody>

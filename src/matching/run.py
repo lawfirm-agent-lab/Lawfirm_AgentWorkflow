@@ -4,9 +4,12 @@ python -m src.matching.run --dotenv --cv expert.pdf [--cv other.pdf] --cases eva
 
 The cases file lists each case with its metadata and one document source: "entries" (a saved
 CourtListener entries JSON with plain_text) plus "entry_number", or a local "pdf". A case
-without a readable document is reported as insufficient information. Nothing is downloaded
-and no CourtListener request is made. LLM answers are cached in data/matching/cache, so a
-re-run only calls the model for inputs or prompts that changed.
+without a readable document is reported as insufficient information.
+
+With --find-cases, each CV also gets new cases found on CourtListener (src.matching.discover):
+3 search requests per CV, capped by a local ledger; complaint PDFs come from public storage.
+Without it nothing is downloaded and no CourtListener request is made. LLM answers are cached
+in data/matching/cache, so a re-run only calls the model for inputs or prompts that changed.
 """
 import argparse
 import hashlib
@@ -16,20 +19,21 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from src.core.config import ConfigError
+from src.core.config import ConfigError, Limits
 from src.ingest.pdf import ExtractionError, extract_pdf
 from src.llm.client import LLMError, create_client
 from src.llm.config import PROFILES, LLMSettings, profile_env
 from src.llm.document import MARKER, pages_from_extraction, pages_from_plain_text
 from src.llm.output import InvalidOutput
+from src.matching import discover, profiles
 from src.matching import match as matching
-from src.matching import profiles
 from src.matching.report import render
 
 ROOT = Path(__file__).resolve().parents[2]
 PROMPTS = ROOT / "src" / "llm" / "prompts"
 STORAGE = "https://storage.courtlistener.com/"
 MIN_CASE_CHARS = 2000
+LOCAL_LIMITS = Limits(per_day=30, headroom_per_day=0, headroom_per_hour=0, max_requests_per_run=6)
 
 
 class Model:
@@ -115,14 +119,12 @@ def case_profile(model, case, pages, limit):
 
 
 def match_input(expert, case, profile):
-    expert_view = {"name": expert["name"], "headline": expert["headline"], "domains": expert["domains"],
-                   "items": [{k: i[k] for k in ("id", "kind", "summary")} for i in expert["items"]]}
     case_view = {"name": case["name"], "court": case.get("court"), **{k: profile[k] for k in (
                      "plaintiffs", "defendants", "case_type", "domains", "summary", "technology")},
                  "issues": [{k: i[k] for k in ("id", "issue", "technical", "quote")} for i in profile["issues"] if i["technical"]],
                  "expertise": [{k: x[k] for k in ("id", "area", "basis", "why")} for x in profile["expertise"]],
                  "counsel": [{k: c.get(k) for k in ("name", "firm", "party")} for c in profile["counsel"]]}
-    return (f"<expert>\n{json.dumps(expert_view, ensure_ascii=False, indent=1)}\n</expert>\n"
+    return (f"<expert>\n{expert_view(expert)}\n</expert>\n"
             f"<case>\n{json.dumps(case_view, ensure_ascii=False, indent=1)}\n</case>")
 
 
@@ -140,36 +142,102 @@ def case_status(case, base):
     return "no document"
 
 
-def step(log, stage, label, model, before, detail):
-    log({"stage": stage, "label": label, "detail": detail, "cached": model.stats["cached"] > before})
+def step(log, stage, label, model, before, detail, **extra):
+    log({"stage": stage, "label": label, "detail": detail, "cached": model.stats["cached"] > before, **extra})
 
 
-def run(model, cv_paths, cases, base, limit, log=print):
-    """log receives one dict per finished step: stage ("case", "expert", "match"), label, detail, cached."""
-    loaded = []
-    for case in cases:
-        case = {"document_label": "Complaint", "document_short": "Complaint", **case}
-        pages, url = case_document(case, base)
-        case["document_url"] = case.get("document_url") or url
-        before = model.stats["cached"]
-        if not pages or sum(len(p) for p in pages) < MIN_CASE_CHARS:
-            case["note"] = case.get("note") or "No readable case document on CourtListener."
-            loaded.append((case, None))
-            step(log, "case", case["name"], model, before, "no readable document")
+def expert_view(expert, items=True):
+    view = {"name": expert["name"], "headline": expert["headline"], "domains": expert["domains"]}
+    if items:
+        view["items"] = [{k: i[k] for k in ("id", "kind", "summary")} for i in expert["items"]]
+    return json.dumps(view, ensure_ascii=False, indent=1)
+
+
+def find_cases(model, search, expert, keep, pdf_dir, log, per_search=8):
+    """Search, download and screen. Returns (cases to profile, discovery record for the report)."""
+    before = model.stats["cached"]
+    searches = model.ask("case_search_v1", f"<expert>\n{expert_view(expert)}\n</expert>", discover.parse_searches, 1000)
+    step(log, "plan", "Search terms", model, before, "; ".join(s["label"] for s in searches))
+    found, seen = [], set()
+    for s in searches:
+        rows, cached = search.search(s["terms"])
+        fresh = [r for r in rows if r["docket_id"] not in seen][:per_search]
+        seen.update(r["docket_id"] for r in fresh)
+        found += [{**r, "found_by": s["label"]} for r in fresh]
+        s.update(results=len(rows), taken=len(fresh))
+        log({"stage": "search", "label": s["label"], "detail": f"{len(rows)} complaints found, {len(fresh)} new taken",
+             "cached": cached})
+    candidates = []
+    for case in found:
+        try:
+            case["pdf"] = str(search.download(case, pdf_dir))
+        except discover.DiscoveryError as exc:
+            case["download_error"] = str(exc)
             continue
-        profile = case_profile(model, case, pages, limit)
-        step(log, "case", case["name"], model, before,
-             f"{len(profile['issues'])} issues, {len(profile['expertise'])} expertise areas, "
-             f"{profile['pages_read']}/{profile['pages']} pages read, {len(profile['dropped'])} unverified claims dropped")
-        loaded.append((case, profile))
+        case["excerpt"] = discover.first_pages(case["pdf"])
+        case["docket_number"] = discover.case_number(case["excerpt"])
+        candidates.append(case)
+    listing = [{"id": f"C{n}", "name": c["name"], "court": c["court"], "filed": c["filed"], "description": c["description"],
+                "first_pages": c["excerpt"]} for n, c in enumerate(candidates, 1)]
+    before = model.stats["cached"]
+    screened = model.ask("case_screen_v1", f"<expert>\n{expert_view(expert, items=False)}\n</expert>\n<candidates>\n"
+                         f"{json.dumps(listing, ensure_ascii=False, indent=1)}\n</candidates>", discover.parse_screen, 6000)
+    for n, case in enumerate(candidates, 1):
+        verdict = screened.get(f"C{n}") or {"relevant": False, "domains": [], "case_type": None,
+                                            "reason": "Not assessed by the screening step."}
+        case["screen"] = verdict
+    relevant = [c for c in candidates if c["screen"]["relevant"]]
+    kept = discover.diverse(relevant, keep)
+    step(log, "screen", "Screening", model, before,
+         f"{len(relevant)} of {len(candidates)} candidates look relevant, {len(kept)} kept for full reading",
+         total_hint=len(kept))
+    for case in candidates:
+        case["kept"] = case in kept
+    record = {"searches": searches, "days": search.days,
+              "candidates": [{k: c.get(k) for k in ("name", "court", "filed", "url", "found_by", "screen", "kept",
+                                                    "download_error", "docket_number")} for c in found]}
+    cases = [{k: c[k] for k in ("name", "court", "filed", "url", "document_label", "document_url", "pdf", "docket_number",
+                                "found_by")} for c in kept]
+    return cases, record
+
+
+def load_case(model, case, base, limit, log):
+    case = {"document_label": "Complaint", "document_short": "Complaint", **case}
+    before = model.stats["cached"]
+    try:
+        pages, url = case_document(case, base)
+    except ExtractionError as exc:
+        pages, url, case["note"] = None, None, f"The document could not be read: {exc}"
+    case["document_url"] = case.get("document_url") or url
+    if not pages or sum(len(p) for p in pages) < MIN_CASE_CHARS:
+        case["note"] = case.get("note") or "No readable case document on CourtListener."
+        step(log, "case", case["name"], model, before, "no readable document")
+        return case, None
+    profile = case_profile(model, case, pages, limit)
+    step(log, "case", case["name"], model, before,
+         f"{len(profile['issues'])} issues, {len(profile['expertise'])} expertise areas, "
+         f"{profile['pages_read']}/{profile['pages']} pages read, {len(profile['dropped'])} unverified claims dropped")
+    return case, profile
+
+
+def run(model, cv_paths, cases, base, limit, log=print, search=None, keep=6, pdf_dir=None):
+    """log receives one dict per finished step: stage, label, detail, cached (and total_hint after screening).
+
+    With a search (CourtListenerSearch), new cases are found for each expert and added to `cases`."""
     experts = []
     for path in cv_paths:
         before = model.stats["cached"]
         expert = expert_profile(model, path)
         step(log, "expert", expert["name"], model, before,
              f"{len(expert['items'])} experience items verified, {len(expert['dropped'])} dropped")
+        pool, discovery = list(cases), None
+        if search:
+            found, discovery = find_cases(model, search, expert, keep, pdf_dir, log)
+            known = {c.get("url") for c in pool}
+            pool += [c for c in found if c["url"] not in known]
         results = []
-        for case, profile in loaded:
+        for case in pool:
+            case, profile = load_case(model, case, base, limit, log)
             before = model.stats["cached"]
             if profile is None:
                 result = matching.insufficient("No readable case document, so the fit cannot be judged.")
@@ -178,11 +246,30 @@ def run(model, cv_paths, cases, base, limit, log=print):
             else:
                 parsed = model.ask("case_match_v1", match_input(expert, case, profile), matching.parse_match, 4000)
                 result = matching.enforce(parsed, expert, profile)
-            results.append({"case": case, "profile": profile, "match": result})
+            results.append({"case": case, "profile": profile, "match": result,
+                            "score": matching.score(result, profile, case)})
             step(log, "match", case["name"], model, before,
                  f"{matching.LABELS[result['tier']]}, {len(result['matches'])} verified reasons")
-        experts.append({"profile": expert, "results": matching.rank(results)})
+        experts.append({"profile": expert, "results": matching.rank(results), "discovery": discovery})
     return experts
+
+
+def make_search(env, data_dir, days=365):
+    """A CourtListener search client with its own request ledger. Local runs are capped at
+    LOCAL_LIMITS because the cloud pipeline uses the same account (125 requests a day)."""
+    import requests
+
+    from src.core.ratelimit import RequestBudget
+    from src.store.pipeline import PipelineStore
+
+    token = (env.get("COURTLISTENER_TOKEN") or "").strip()
+    if not token:
+        raise ConfigError("Missing COURTLISTENER_TOKEN")
+    session = requests.Session()
+    session.headers.update({"Authorization": "Token " + token, "Accept": "application/json"})
+    data_dir.mkdir(parents=True, exist_ok=True)
+    budget = RequestBudget(PipelineStore(str(data_dir / "courtlistener.db")), LOCAL_LIMITS)
+    return discover.CourtListenerSearch(session, budget, data_dir / "search", days)
 
 
 def print_step(item):
@@ -193,6 +280,9 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--cv", type=Path, action="append", required=True, help="Expert CV PDF (repeatable)")
     parser.add_argument("--cases", type=Path, required=True, help="JSON list of cases")
+    parser.add_argument("--find-cases", action="store_true", help="Also search CourtListener for new cases (3 requests per CV)")
+    parser.add_argument("--keep", type=int, default=6, help="Found cases to read in full")
+    parser.add_argument("--days", type=int, default=365, help="Search complaints filed in the last N days")
     parser.add_argument("--out", type=Path, default=ROOT / "data" / "matching")
     parser.add_argument("--max-case-chars", type=int, default=160000, help="Case document text sent to the model")
     parser.add_argument("--profile", choices=sorted(PROFILES))
@@ -207,8 +297,9 @@ def main(argv=None):
         settings = LLMSettings.from_env(profile_env(os.environ, args.profile, args.model, args.extra_body))
         model = Model(settings, args.out / "cache")
         cases = json.loads(args.cases.read_text(encoding="utf-8"))
-        experts = run(model, args.cv, cases, ROOT, args.max_case_chars, print_step)
-    except (ConfigError, LLMError, InvalidOutput, ExtractionError, OSError, ValueError) as exc:
+        search = make_search(os.environ, args.out, args.days) if args.find_cases else None
+        experts = run(model, args.cv, cases, ROOT, args.max_case_chars, print_step, search, args.keep, args.out / "pdfs")
+    except (ConfigError, LLMError, InvalidOutput, ExtractionError, discover.DiscoveryError, OSError, ValueError) as exc:
         print(f"Matching failed: {type(exc).__name__}: {exc}")
         return 1
     stamp = datetime.now(timezone.utc)

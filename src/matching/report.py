@@ -7,6 +7,8 @@ from html import escape
 
 from src.matching.match import LABELS
 
+SHOWN_REASONS = 3  # strongest first; the rest are one click away
+
 STYLE = """
 :root{--bg:#fff;--fg:#1d2329;--muted:#5f6b76;--line:#d9dee3;--card:#f6f8fa;--quote:#eef2f6;
 --high:#0f7b3f;--medium:#9a6700;--low:#57606a;--none:#8c959f;--insufficient:#6639ba;--warn:#b42318}
@@ -28,9 +30,15 @@ pre{white-space:pre-wrap;font:13px/1.5 inherit;font-family:inherit;background:va
 a{color:inherit}ul{margin:4px 0;padding-left:18px}.legend{font-size:12px;color:var(--muted);margin-top:16px}
 button.copy{margin-top:6px;font:inherit;font-size:12px;padding:2px 10px;border:1px solid var(--line);border-radius:6px;background:var(--card);color:var(--fg);cursor:pointer}
 nav{display:flex;gap:16px;align-items:center;margin-bottom:16px;font-size:13px}
+h3{font-size:15px;margin:20px 0 4px}details.group{margin-top:16px}details.group>summary{font-size:15px}
+.filters{margin:10px 0}.chip{font:inherit;font-size:12px;margin:2px;padding:2px 10px;border-radius:12px;border:1px solid var(--line);background:var(--bg);color:var(--fg);cursor:pointer}
+.chip.on{background:var(--fg);color:var(--bg)}.score{font-size:12px;margin-top:4px}code{font-size:12px}
 """
 SCRIPT = """function copyDraft(b){navigator.clipboard.writeText(b.previousElementSibling.innerText).then(function(){
-b.textContent='Copied';setTimeout(function(){b.textContent='Copy'},1500)})}"""
+b.textContent='Copied';setTimeout(function(){b.textContent='Copy'},1500)})}
+function filterRows(b){var s=b.closest('section'),t=b.dataset.tag;
+s.querySelectorAll('.chip').forEach(function(c){c.classList.toggle('on',c===b)});
+s.querySelectorAll('tr[data-tags]').forEach(function(r){r.hidden=!!t&&r.dataset.tags.split('|').indexOf(t)<0})}"""
 
 
 def e(value):
@@ -73,7 +81,9 @@ def reasons_cell(match, doc_label):
                     f"<div><span class='lbl'>{e(doc_label)} {p['id']}, p. {p['page']}</span><q>{e(p['quote'])}</q>"
                     f"<span class='muted'>{e(what)}</span></div></div></div>")
     gaps = "".join(f"<li>{e(g)}</li>" for g in match["gaps"])
-    return "".join(rows) + (f"<div class='lbl'>Gaps</div><ul>{gaps}</ul>" if gaps else "")
+    shown, more = rows[:SHOWN_REASONS], rows[SHOWN_REASONS:]
+    rest = f"<details><summary>{len(more)} more reason{'s' if len(more) > 1 else ''}</summary>{''.join(more)}</details>" if more else ""
+    return "".join(shown) + rest + (f"<div class='lbl'>Gaps</div><ul>{gaps}</ul>" if gaps else "")
 
 
 def sources_cell(case, match, profile):
@@ -103,28 +113,100 @@ def mail_cell(match, profile):
             f"<button type='button' class='copy' onclick='copyDraft(this)'>Copy</button></details>{notes}")
 
 
+GROUPS = ("high", "medium", "low", "insufficient", "none")
+HEAD = ("<thead><tr><th>#</th><th>Case</th><th>Match judgment</th><th>Match reasons (CV ↔ case document)</th>"
+        "<th>Sources</th><th>Email draft</th></tr></thead>")
+
+
+def score_line(result):
+    s = result.get("score")
+    if not s or result["match"]["tier"] in ("insufficient", "none"):
+        return ""
+    p = s["parts"]
+    bits = [f"evidence {p['evidence']} ({s['direct']} direct, {s['related']} related)"]
+    bits += [f"stated expertise {p['stated']}"] if p["stated"] else []
+    bits += [f"technical {p['technical']}", f"recent {p['recent']}"]
+    return f"<div class='muted score'>Score {s['total']} = {' + '.join(bits)}</div>"
+
+
+def row(rank, r):
+    case, match, cp = r["case"], r["match"], r["profile"]
+    labels = ((cp or {}).get("domains") or []) + ([cp["case_type"]] if cp else [])
+    return (f"<tr data-tags='{e('|'.join(labels))}'><td>{rank}</td><td class='case'>{case_cell(case, cp)}</td>"
+            f"<td class='judge'>{tier(match['tier'])}<div>{tags((cp or {}).get('domains', []))}</div>"
+            f"<p>{e(match['summary'])}</p>{score_line(r)}</td>"
+            f"<td class='reasons'>{reasons_cell(match, case.get('document_short', 'Doc'))}</td>"
+            f"<td class='src'>{sources_cell(case, match, cp)}</td><td class='mail'>{mail_cell(match, cp)}</td></tr>")
+
+
+def discovery_block(discovery):
+    if not discovery:
+        return ""
+    candidates = discovery["candidates"]
+    screened = [c for c in candidates if c.get("screen")]
+    relevant = [c for c in screened if c["screen"]["relevant"]]
+    kept = [c for c in candidates if c.get("kept")]
+    searches = "".join(f"<tr><td>{e(s['label'])}</td><td><code>{e(s['terms'])}</code></td><td>{s.get('results', 0)}</td></tr>"
+                       for s in discovery["searches"])
+
+    def listing(values):
+        return "".join(f"<li><a href='{e(c['url'])}'>{e(c['name'])}</a> <span class='muted'>({e(c['court'])}, filed {e(c['filed'])}, "
+                       f"via {e(c['found_by'])})</span><br><span class='muted'>{e((c.get('screen') or {}).get('reason') or c.get('download_error'))}"
+                       f"</span></li>" for c in values)
+    later = [c for c in relevant if not c.get("kept")]
+    rejected = [c for c in candidates if not (c.get("screen") or {}).get("relevant")]
+    return (f"<details class='expert'><summary><b>How these cases were found</b>: {len(discovery['searches'])} searches of "
+            f"complaints filed in the last {discovery['days']} days → {len(screened)} candidates screened → {len(relevant)} relevant "
+            f"→ {len(kept)} read in full</summary>"
+            f"<table><thead><tr><th>Search (written from the CV)</th><th>CourtListener query terms</th><th>Complaints</th></tr></thead>"
+            f"<tbody>{searches}</tbody></table>"
+            f"<div class='lbl'>Read in full ({len(kept)})</div><ul>{listing(kept)}</ul>"
+            f"<details><summary>Relevant, not read yet ({len(later)})</summary><ul>{listing(later)}</ul></details>"
+            f"<details><summary>Filtered out at screening ({len(rejected)})</summary><ul>{listing(rejected)}</ul></details>"
+            f"</details>")
+
+
+def filters(results):
+    labels = []
+    for r in results:
+        cp = r["profile"] or {}
+        for label in (cp.get("domains") or []) + ([cp["case_type"]] if cp.get("case_type") else []):
+            if label not in labels:
+                labels.append(label)
+    if len(labels) < 2:
+        return ""
+    chips = "".join(f"<button type='button' class='chip' onclick='filterRows(this)' data-tag='{e(t)}'>{e(t)}</button>" for t in labels)
+    return f"<div class='filters'><span class='lbl'>Filter</span> <button type='button' class='chip on' onclick='filterRows(this)' data-tag=''>All</button>{chips}</div>"
+
+
 def render(experts, generated, model, nav=""):
     """nav: optional trusted HTML shown above the title (links back into the local web app)."""
     sections = []
     for expert in experts:
-        profile = expert["profile"]
+        profile, results = expert["profile"], expert["results"]
         counts = {}
-        for r in expert["results"]:
+        for r in results:
             counts[r["match"]["tier"]] = counts.get(r["match"]["tier"], 0) + 1
-        summary = " ".join(f"{tier(t)} {n}" for t, n in sorted(counts.items(), key=lambda kv: list(LABELS).index(kv[0])))
-        rows = []
-        for rank, r in enumerate(expert["results"], 1):
-            case, match, cp = r["case"], r["match"], r["profile"]
-            rows.append(f"<tr><td>{rank}</td><td class='case'>{case_cell(case, cp)}</td>"
-                        f"<td class='judge'>{tier(match['tier'])}<div>{tags((cp or {}).get('domains', []))}</div><p>{e(match['summary'])}</p></td>"
-                        f"<td class='reasons'>{reasons_cell(match, case.get('document_short', 'Doc'))}</td>"
-                        f"<td class='src'>{sources_cell(case, match, cp)}</td><td class='mail'>{mail_cell(match, cp)}</td></tr>")
+        summary = " ".join(f"{tier(t)} {counts[t]}" for t in GROUPS if t in counts)
+        groups, rank = [], 0
+        for group in GROUPS:
+            members = [r for r in results if r["match"]["tier"] == group]
+            if not members:
+                continue
+            rows = "".join(row(rank + n, r) for n, r in enumerate(members, 1))
+            rank += len(members)
+            table = f"<div class='wrap'><table>{HEAD}<tbody>{rows}</tbody></table></div>"
+            title = f"{tier(group)} {len(members)} case{'s' if len(members) > 1 else ''}"
+            groups.append(f"<details class='group'><summary>{title} (collapsed)</summary>{table}</details>" if group == "none"
+                          else f"<h3>{title}</h3>{table}")
         items = "".join(f"<li>{e(i['summary'])} <span class='muted'>({i['id']}, {e(i['kind'])}, p. {i['page']})</span></li>" for i in profile["items"])
         sections.append(
-            f"<h2>{e(profile['name'])}</h2><div class='expert'><div>{e(profile['headline'])}</div><div>{tags(profile['domains'])}</div>"
+            f"<section><h2>{e(profile['name'])}</h2><div class='expert'><div>{e(profile['headline'])}</div><div>{tags(profile['domains'])}</div>"
             f"<details><summary>{len(profile['items'])} verified experience items from the CV</summary><ul>{items}</ul></details></div>"
-            f"<div>{summary}</div><div class='wrap'><table><thead><tr><th>#</th><th>Case</th><th>Match judgment</th>"
-            f"<th>Match reasons (CV ↔ case document)</th><th>Sources</th><th>Email draft</th></tr></thead><tbody>{''.join(rows)}</tbody></table></div>")
+            f"{discovery_block(expert.get('discovery'))}<div>{summary}</div>{filters(results)}{''.join(groups)}"
+            f"<div class='legend'>Ranked by tier, then score within the tier. Score = evidence (2 per direct + 1 per related "
+            f"verified reason) + 1 if the document itself states the expertise is needed + share of technical issues + recency "
+            f"(1 if filed within 90 days, 0.5 within a year).</div></section>")
     return (f"<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
             f"<title>Expert Case Matching</title><style>{STYLE}</style><script>{SCRIPT}</script></head>"
             f"<body><main>{nav}<h1>Expert–case matching</h1>"
