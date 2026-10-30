@@ -146,8 +146,10 @@ def discovery_block(discovery):
     screened = [c for c in candidates if c.get("screen")]
     relevant = [c for c in screened if c["screen"]["relevant"]]
     kept = [c for c in candidates if c.get("kept")]
-    searches = "".join(f"<tr><td>{e(s['label'])}</td><td><code>{e(s['terms'])}</code></td><td>{s.get('results', 0)}</td></tr>"
-                       for s in discovery["searches"])
+    def search_row(s):
+        error = f"<div class='warn'>Not run: {e(s['error'])}</div>" if s.get("error") else ""
+        return f"<tr><td>{e(s['label'])}</td><td><code>{e(s['terms'])}</code></td><td>{s.get('results', 0)}{error}</td></tr>"
+    searches = "".join(search_row(s) for s in discovery["searches"])
 
     def listing(values):
         return "".join(f"<li><a href='{e(c['url'])}'>{e(c['name'])}</a> <span class='muted'>({e(c['court'])}, filed {e(c['filed'])}, "

@@ -7,6 +7,7 @@ import time
 import uuid
 
 DAY = 86400
+SLACK_SECONDS = 1
 
 
 class RequestBudget:
@@ -47,8 +48,10 @@ class RequestBudget:
                 if count >= cap:
                     return False
             last = self._last()
-            if last is not None and at - last < limits.min_interval_seconds:
-                return False  # Another run reserved in the meantime.
+            # Another run reserved in the meantime. The slack keeps a wake-up that lands exactly on
+            # the interval (wall-clock jitter after sleeping) from being mistaken for one.
+            if last is not None and at - last < limits.min_interval_seconds - SLACK_SECONDS:
+                return False
             self.store.execute("INSERT INTO api_requests VALUES (?,?,?)", (uuid.uuid4().hex, self.api, at))
             self.store.execute("DELETE FROM api_requests WHERE api=? AND attempted_at<?", (self.api, at - 2 * DAY))
         self.used += 1

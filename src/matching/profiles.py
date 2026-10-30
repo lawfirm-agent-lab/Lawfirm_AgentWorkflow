@@ -15,6 +15,7 @@ DOMAINS = ("Gaming & Gambling", "Cybersecurity & Forensics", "Software & Interne
            "Hardware & Electronics", "Telecom & Networking", "Fintech & Payments", "Life Sciences & Medical", "Other")
 KINDS = ("role", "project", "patent", "publication", "testimony", "certification", "education", "skill", "award")
 BASES = ("stated", "inferred")
+UNNAMED = "Unnamed expert"
 
 
 # Bullet glyphs (often private-use characters from symbol fonts) sit between list items in
@@ -72,7 +73,8 @@ def quoted(item):
 
 def parse_expert(raw):
     data = load(raw)
-    return {"name": text(data.get("name"), 80, "name"), "headline": text(data.get("headline"), 200, "headline"),
+    name = data.get("name") if isinstance(data.get("name"), str) and data["name"].strip() else None
+    return {"name": text(name, 80, "name", required=False) or UNNAMED, "headline": text(data.get("headline"), 200, "headline"),
             "domains": domains(data),
             "items": [{"kind": choice(i.get("kind"), KINDS, "kind"), "summary": text(i.get("summary"), 200, "summary"),
                        **quoted(i)} for i in objects(data, "items", 40)]}

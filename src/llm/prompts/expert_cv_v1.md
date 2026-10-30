@@ -5,7 +5,7 @@ The user message contains the CV text between <cv> and </cv>. Each page starts w
 Extract what a lawyer would need to judge whether this person could be a technical expert in a case. Use only the CV text. Do not use outside knowledge about the person.
 
 Fields:
-- "name": the person's name as written in the CV.
+- "name": the person's name as written in the CV, or null if the CV does not give one.
 - "headline": one plain-English sentence, at most 200 characters, on what this person is an expert in.
 - "domains": up to 4 of these technical domains, the person's strongest first: "Gaming & Gambling", "Cybersecurity & Forensics", "Software & Internet", "AI & Machine Learning", "Hardware & Electronics", "Telecom & Networking", "Fintech & Payments", "Life Sciences & Medical", "Other".
 - "items": up to 40 specific pieces of experience that could matter in a lawsuit, most distinctive first. Each has:

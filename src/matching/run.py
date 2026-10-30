@@ -33,6 +33,7 @@ ROOT = Path(__file__).resolve().parents[2]
 PROMPTS = ROOT / "src" / "llm" / "prompts"
 STORAGE = "https://storage.courtlistener.com/"
 MIN_CASE_CHARS = 2000
+CASE_PAGES = 150
 LOCAL_LIMITS = Limits(per_day=30, headroom_per_day=0, headroom_per_hour=0, max_requests_per_run=6)
 
 
@@ -106,7 +107,10 @@ def case_document(case, base):
             url = STORAGE + doc["filepath_local"] if doc.get("filepath_local") else None
             return profiles.clean(pages_from_plain_text(doc["plain_text"])), url
     elif case.get("pdf"):
-        return profiles.clean(pages_from_extraction(extract_pdf(base / case["pdf"], layout=False))), case.get("document_url")
+        # The model reads at most --max-case-chars (about 100-150 pages); later pages are usually exhibits.
+        extracted = extract_pdf(base / case["pdf"], layout=False, first_pages=CASE_PAGES)
+        case["total_pages"] = extracted["total_pages"]
+        return profiles.clean(pages_from_extraction(extracted)), case.get("document_url")
     return None, None
 
 
@@ -115,7 +119,7 @@ def case_profile(model, case, pages, limit):
     body, used = marked(pages, limit)
     parsed = model.ask("case_profile_v1", f"{header}\n\n<document>\n{body}</document>", profiles.parse_case, 6000)
     profile, dropped = profiles.verify_case(parsed, pages)
-    return {**profile, "pages": len(pages), "pages_read": used, "dropped": dropped}
+    return {**profile, "pages": case.get("total_pages") or len(pages), "pages_read": used, "dropped": dropped}
 
 
 def match_input(expert, case, profile):
@@ -160,7 +164,13 @@ def find_cases(model, search, expert, keep, pdf_dir, log, per_search=8):
     step(log, "plan", "Search terms", model, before, "; ".join(s["label"] for s in searches))
     found, seen = [], set()
     for s in searches:
-        rows, cached = search.search(s["terms"])
+        try:
+            rows, cached = search.search(s["terms"])
+        except discover.DiscoveryError as exc:
+            # Keep what earlier searches found; the report shows which search did not run.
+            s.update(results=0, taken=0, error=str(exc))
+            log({"stage": "search", "label": s["label"], "detail": f"not run: {exc}", "cached": False})
+            continue
         fresh = [r for r in rows if r["docket_id"] not in seen][:per_search]
         seen.update(r["docket_id"] for r in fresh)
         found += [{**r, "found_by": s["label"]} for r in fresh]
@@ -181,7 +191,8 @@ def find_cases(model, search, expert, keep, pdf_dir, log, per_search=8):
                 "first_pages": c["excerpt"]} for n, c in enumerate(candidates, 1)]
     before = model.stats["cached"]
     screened = model.ask("case_screen_v1", f"<expert>\n{expert_view(expert, items=False)}\n</expert>\n<candidates>\n"
-                         f"{json.dumps(listing, ensure_ascii=False, indent=1)}\n</candidates>", discover.parse_screen, 6000)
+                         f"{json.dumps(listing, ensure_ascii=False, indent=1)}\n</candidates>",
+                         discover.parse_screen, 6000) if listing else {}
     for n, case in enumerate(candidates, 1):
         verdict = screened.get(f"C{n}") or {"relevant": False, "domains": [], "case_type": None,
                                             "reason": "Not assessed by the screening step."}

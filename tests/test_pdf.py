@@ -40,6 +40,14 @@ class PdfTests(unittest.TestCase):
         self.assertEqual(page['method'], 'text_fallback')
         self.assertTrue(page['warnings'])
 
+    @patch("src.ingest.pdf._run")
+    def test_first_pages_of_a_long_document(self, run):
+        long_text = "This complaint page has plenty of text on it for extraction."
+        run.side_effect = ["Pages: 230\n", long_text, long_text]
+        result = extract_pdf(self.path, first_pages=2)
+        self.assertEqual((result['page_count'], result['total_pages']), (2, 230))
+        self.assertEqual(run.call_count, 3)
+
     @patch("src.ingest.pdf._run", return_value="Pages: 201\n")
     def test_page_limit(self, run):
         with self.assertRaises(ExtractionError):
