@@ -3,7 +3,7 @@ from pathlib import Path
 import subprocess
 import unittest
 from unittest.mock import patch
-from src.ingest.pdf import ExtractionError, extract_pdf, _run, main
+from src.ingest.pdf import ExtractionError, extract_pdf, _run, main, tool
 
 
 class PdfTests(unittest.TestCase):
@@ -76,3 +76,14 @@ class PdfTests(unittest.TestCase):
         self.assertEqual(len(results), 1)
         self.assertTrue((results[0] / 'document.json').exists())
         self.assertIn('Page 1', (results[0] / 'document.txt').read_text())
+
+    def test_tools_found_outside_path(self):
+        # Some editor terminals start without Homebrew on PATH; the tools must still be found.
+        with tempfile.TemporaryDirectory() as directory:
+            executable = Path(directory) / 'pdfinfo'
+            executable.write_text('#!/bin/sh\n')
+            executable.chmod(0o755)
+            with patch('src.ingest.pdf.shutil.which', return_value=None), \
+                    patch('src.ingest.pdf.TOOL_DIRS', (directory,)):
+                self.assertEqual(tool('pdfinfo'), str(executable))
+                self.assertEqual(tool('missing-tool'), 'missing-tool')

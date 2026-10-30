@@ -17,6 +17,7 @@ import re
 import subprocess
 from datetime import date, timedelta
 
+from src.ingest.pdf import tool
 from src.llm.output import InvalidOutput, text
 from src.matching.profiles import DOMAINS, clean, load, objects
 
@@ -156,7 +157,7 @@ class CourtListenerSearch:
 def first_pages(pdf, pages=3, limit=3000):
     """Text of the first pages, for screening only (no OCR: scanned complaints show as empty)."""
     try:
-        out = subprocess.run(["pdftotext", "-f", "1", "-l", str(pages), "-enc", "UTF-8", str(pdf), "-"],
+        out = subprocess.run([tool("pdftotext"), "-f", "1", "-l", str(pages), "-enc", "UTF-8", str(pdf), "-"],
                              check=True, capture_output=True, text=True, errors="replace", timeout=60).stdout
     except (OSError, subprocess.SubprocessError):
         return ""

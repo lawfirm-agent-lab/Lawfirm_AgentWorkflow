@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import tempfile
 
@@ -17,7 +18,24 @@ class ExtractionError(RuntimeError):
     """The document could not be completely processed."""
 
 
+# Homebrew's bin directories, for shells (e.g. some editor terminals) whose PATH lacks them.
+TOOL_DIRS = ("/opt/homebrew/bin", "/usr/local/bin")
+
+
+def tool(name):
+    """Full path of a Poppler/Tesseract executable: PATH first, then the Homebrew directories."""
+    found = shutil.which(name)
+    if found:
+        return found
+    for directory in TOOL_DIRS:
+        path = Path(directory) / name
+        if path.is_file() and os.access(path, os.X_OK):
+            return str(path)
+    return name
+
+
 def _run(args, timeout):
+    args = [tool(args[0]), *args[1:]]
     try:
         return subprocess.run(args, check=True, capture_output=True, text=True,
                               encoding="utf-8", errors="replace", timeout=timeout,
