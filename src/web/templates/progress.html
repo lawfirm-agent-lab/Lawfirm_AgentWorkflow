@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}Matching run{% endblock %}
+{% block body %}
+<nav><a href="{{ url_for('index') }}">← Home</a></nav>
+<h1>Matching run</h1>
+<div class="muted">CV: {{ status.cv }} · {{ status.cases }} cases · run {{ run_id }}</div>
+
+<div class="bar"><div id="bar" style="width:0"></div></div>
+<div id="state" class="run">Starting…</div>
+<ol class="steps" id="steps"></ol>
+<div id="error" class="card error" hidden></div>
+
+<script>
+var STAGES = {case: "Case profile", expert: "Read CV", match: "Match"};
+function text(tag, value, cls) { var el = document.createElement(tag); el.textContent = value; if (cls) el.className = cls; return el; }
+function show(s) {
+  var done = s.steps.length;
+  document.getElementById("bar").style.width = Math.round(100 * done / s.total) + "%";
+  var list = document.getElementById("steps");
+  list.replaceChildren();
+  s.steps.forEach(function (step) {
+    var li = document.createElement("li");
+    li.append(text("b", "✓ " + STAGES[step.stage] + ": "), text("span", step.label + " — " + step.detail));
+    if (step.cached) li.append(text("span", " (cached)", "muted"));
+    list.append(li);
+  });
+  var next = s.steps.length < {{ status.cases }} ? "Building case profiles…"
+           : s.steps.length === {{ status.cases }} ? "Reading the CV…" : "Matching the CV to each case…";
+  var state = document.getElementById("state");
+  if (s.state === "failed") {
+    state.textContent = "Failed"; state.className = "warn";
+    var box = document.getElementById("error"); box.hidden = false; box.textContent = s.error;
+    return false;
+  }
+  if (s.state === "done") { state.textContent = "Done, opening results…"; state.className = "ok"; location.href = "{{ url_for('result', run_id=run_id) }}"; return false; }
+  state.textContent = "Step " + (done + 1) + " of " + s.total + ": " + next;
+  return true;
+}
+function poll() {
+  fetch("{{ url_for('status', run_id=run_id) }}").then(function (r) { return r.json(); })
+    .then(function (s) { if (show(s)) setTimeout(poll, 2000); })
+    .catch(function () { setTimeout(poll, 4000); });
+}
+poll();
+</script>
+{% endblock %}

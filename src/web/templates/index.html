@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block body %}
+<h1>Expert–case matching</h1>
+<div class="muted">Upload an expert's CV. The system reads each case document, matches the CV's experience to the case's technical issues with quoted evidence, ranks the cases, and drafts an email to counsel. Local prototype · model {{ model or "not configured" }}</div>
+
+{% if config_error %}<div class="card error">LLM settings: {{ config_error }}. Start the server with <code>python -m src.web --dotenv</code>.</div>{% endif %}
+{% if error %}<div class="card error">{{ error }}</div>{% endif %}
+
+<h2>1. Expert CV</h2>
+<form class="card" method="post" action="{{ url_for('start') }}" enctype="multipart/form-data">
+  <label>Upload a CV (PDF, up to 10 MB)<br><input type="file" name="cv" accept="application/pdf,.pdf"></label>
+  {% if samples %}
+  <div class="or">or use a sample CV</div>
+  {% for s in samples %}<label><input type="radio" name="sample" value="{{ s }}"> {{ s }}</label>{% endfor %}
+  {% endif %}
+  <p><button type="submit" {% if busy or config_error %}disabled{% endif %}>Run matching</button>
+  {% if busy %}<span class="run"> A run is in progress.</span>{% endif %}</p>
+</form>
+
+<h2>2. Case pool ({{ cases|length }})</h2>
+<div class="wrap"><table>
+  <thead><tr><th>Case</th><th>Court</th><th>Filed</th><th>Document</th><th>Status</th></tr></thead>
+  <tbody>
+  {% for c in cases %}
+  <tr>
+    <td>{% if c.url %}<a href="{{ c.url }}">{{ c.name }}</a>{% else %}{{ c.name }}{% endif %}</td>
+    <td>{{ c.court or "" }}{% if c.docket_number %}<div class="muted">{{ c.docket_number }}</div>{% endif %}</td>
+    <td>{{ c.filed or "" }}</td>
+    <td>{{ c.document_label or "Complaint" }}</td>
+    <td>{% if c.status == "readable" %}<span class="ok">readable</span>{% else %}<span class="warn">no document</span>{% endif %}</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table></div>
+<div class="muted">Cases without a readable document are reported as "Insufficient information", not as "Not relevant".</div>
+
+<h2>3. Previous runs</h2>
+{% if history %}
+<div class="wrap"><table>
+  <thead><tr><th>Run</th><th>CV</th><th>State</th><th>Started</th></tr></thead>
+  <tbody>
+  {% for r in history %}
+  <tr>
+    <td><a href="{{ url_for('progress', run_id=r.id) }}">{{ r.id }}</a></td>
+    <td>{{ r.cv }}</td>
+    <td>{% if r.state == "done" %}<span class="ok">done</span>{% elif r.state == "failed" %}<span class="warn">failed</span>{% else %}<span class="run">{{ r.state }}</span>{% endif %}</td>
+    <td>{{ r.started }}</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table></div>
+{% else %}<div class="muted">No runs yet.</div>{% endif %}
+{% endblock %}
