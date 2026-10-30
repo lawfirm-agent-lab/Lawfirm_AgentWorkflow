@@ -61,7 +61,7 @@ def enforce(parsed, expert, case):
     stated = any(p["basis"] == "stated" for p in case["expertise"])
     if email and not stated and NEED_CLAIMS.search(email["body"]):
         notes.append("Email says the case needs an expert, but the document does not: edit before sending")
-    return {**parsed, "tier": tier, "matches": matches, "email": email, "notes": notes}
+    return {**parsed, "tier": tier, "model_tier": parsed["tier"], "matches": matches, "email": email, "notes": notes}
 
 
 def insufficient(reason):

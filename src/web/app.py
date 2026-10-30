@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 
 from flask import Flask, Response, abort, jsonify, redirect, render_template, request, url_for
-from markupsafe import escape
+from markupsafe import Markup, escape
 
 from src.core.config import ConfigError
 from src.llm.config import LLMSettings
@@ -19,6 +19,28 @@ from src.store.pipeline import PipelineStore
 from src.web.jobs import RUN_ID, Jobs
 
 MAX_UPLOAD = 10 * 1024 * 1024
+STEPS = (("resume", "1. Resume text"), ("cv", "2. CV extraction"), ("search", "3. Case search"),
+         ("screen", "4. Screening"), ("cases", "5. Case profiles"), ("match", "6. Matching"))
+PROMPT_OF = {"cv": "expert_cv_v1", "search": "case_search_v1", "screen": "case_screen_v1",
+             "cases": "case_profile_v1", "match": "case_match_v1"}
+
+
+def pretty(raw):
+    try:
+        return json.dumps(json.loads(raw), ensure_ascii=False, indent=2)
+    except (TypeError, ValueError):
+        return raw
+
+
+def inspection(step, trace, expert):
+    """The model calls of one step, each with its input, raw output and what code kept of it."""
+    calls = [{**t, "pretty": pretty(t["output"])} for t in trace if t["step"] == PROMPT_OF.get(step)]
+    if not expert:
+        return calls
+    by_name = {r["case"]["name"]: r for r in expert["results"]}
+    for call in calls:
+        call["result"] = by_name.get(call["label"])
+    return calls
 
 
 def create_app(env, data_dir=ROOT / "data" / "matching", cases_file=ROOT / "eval" / "matching_cases.json",
@@ -101,9 +123,26 @@ def create_app(env, data_dir=ROOT / "data" / "matching", cases_file=ROOT / "eval
         experts = jobs.result(run_id)
         if experts is None:
             return redirect(url_for("progress", run_id=run_id))
-        nav = (f"<nav><a href='{url_for('index')}'>← New run</a><a href='{url_for('result_json', run_id=run_id)}'>"
-               f"Download JSON</a><span class='muted'>CV: {escape(status['cv'])} · run {run_id}</span></nav>")
-        return render(experts, status["finished"], status["model"], nav)
+        return render(experts, status["finished"], status["model"], tabs(run_id, status, "result"))
+
+    def tabs(run_id, status, active):
+        """Top navigation shared by the results page and the step inspection pages."""
+        links = [("result", "Results", url_for("result", run_id=run_id))]
+        links += [(key, title, url_for("inspect", run_id=run_id, step=key)) for key, title in STEPS]
+        items = "".join(f"<a class='tab{' on' if key == active else ''}' href='{href}'>{title}</a>" for key, title, href in links)
+        return Markup(f"<nav><a href='{url_for('index')}'>← New run</a><a href='{url_for('result_json', run_id=run_id)}'>"
+                      f"Download JSON</a><span class='muted'>CV: {escape(status['cv'])} · run {run_id}</span></nav>"
+                      f"<nav class='tabs'>{items}</nav>")
+
+    @app.get("/runs/<run_id>/inspect/<step>")
+    def inspect(run_id, step):
+        status = checked(run_id)
+        if step not in dict(STEPS):
+            abort(404)
+        trace, experts = jobs.trace(run_id), jobs.result(run_id) or []
+        expert = experts[0] if experts else None
+        return render_template("inspect.html", step=step, title=dict(STEPS)[step], tabs=tabs(run_id, status, step),
+                               trace=trace, calls=inspection(step, trace or [], expert), expert=expert, status=status)
 
     @app.get("/runs/<run_id>/result.json")
     def result_json(run_id):

@@ -38,22 +38,31 @@ LOCAL_LIMITS = Limits(per_day=30, headroom_per_day=0, headroom_per_hour=0, max_r
 
 
 class Model:
-    """JSON calls with a file cache, one retry on a transient error and one on invalid output."""
+    """JSON calls with a file cache, one retry on a transient error and one on invalid output.
+
+    trace keeps what the run read and every model call's exact input and raw output (cached
+    ones too), so each step can be reviewed by a person (web app inspection pages)."""
 
     def __init__(self, settings, cache_dir):
         self.settings, self.client = settings, create_client(settings)
         self.cache_dir = cache_dir
         self.stats = {"calls": 0, "cached": 0, "input_tokens": 0, "output_tokens": 0}
+        self.trace = []
         cache_dir.mkdir(parents=True, exist_ok=True)
 
-    def ask(self, prompt_name, user, parse, max_tokens):
+    def record(self, step, label, **data):
+        self.trace.append({"step": step, "label": label, **data})
+
+    def ask(self, prompt_name, user, parse, max_tokens, label=""):
         prompt = (PROMPTS / f"{prompt_name}.md").read_text(encoding="utf-8")
         key = hashlib.sha256(json.dumps([self.settings.provider, self.settings.model, self.settings.extra_body,
                                          prompt_name, prompt, user]).encode()).hexdigest()
         path = self.cache_dir / f"{key}.json"
         if path.exists():
             self.stats["cached"] += 1
-            return parse(json.loads(path.read_text(encoding="utf-8"))["text"])
+            raw = json.loads(path.read_text(encoding="utf-8"))["text"]
+            self.record(prompt_name, label, input=user, output=raw, cached=True)
+            return parse(raw)
         messages = [{"role": "system", "content": prompt}, {"role": "user", "content": user}]
         for attempt in range(2):
             try:
@@ -72,6 +81,8 @@ class Model:
                     raise
                 continue
             path.write_text(json.dumps({"prompt": prompt_name, "text": reply.text}), encoding="utf-8")
+            self.record(prompt_name, label, input=user, output=reply.text, cached=False,
+                        tokens=[reply.input_tokens, reply.output_tokens])
             return result
 
 
@@ -88,10 +99,14 @@ def marked(pages, limit):
     return result, used
 
 
-def expert_profile(model, path):
-    pages = profiles.clean(pages_from_extraction(extract_pdf(path, layout=False)))
+def expert_profile(model, path, name=None):
+    extracted = extract_pdf(path, layout=False)
+    pages = profiles.clean(pages_from_extraction(extracted))
+    model.record("extract_cv", name or Path(path).name, pages=[
+        {"page": p["page"], "method": p["method"], "warnings": p["warnings"], "text": text}
+        for p, text in zip(extracted["pages"], pages)])
     body, _ = marked(pages, 60000)
-    parsed = model.ask("expert_cv_v1", f"<cv>\n{body}</cv>", profiles.parse_expert, 6000)
+    parsed = model.ask("expert_cv_v1", f"<cv>\n{body}</cv>", profiles.parse_expert, 6000, label="CV")
     profile, dropped = profiles.verify_expert(parsed, pages)
     return {**profile, "file": Path(path).name, "pages": len(pages), "dropped": dropped}
 
@@ -117,7 +132,8 @@ def case_document(case, base):
 def case_profile(model, case, pages, limit):
     header = "\n".join(f"{k}: {case[k]}" for k in ("name", "court", "docket_number", "filed", "document_label") if case.get(k))
     body, used = marked(pages, limit)
-    parsed = model.ask("case_profile_v1", f"{header}\n\n<document>\n{body}</document>", profiles.parse_case, 6000)
+    parsed = model.ask("case_profile_v1", f"{header}\n\n<document>\n{body}</document>", profiles.parse_case, 6000,
+                       label=case["name"])
     profile, dropped = profiles.verify_case(parsed, pages)
     return {**profile, "pages": case.get("total_pages") or len(pages), "pages_read": used, "dropped": dropped}
 
@@ -160,7 +176,8 @@ def expert_view(expert, items=True):
 def find_cases(model, search, expert, keep, pdf_dir, log, per_search=8):
     """Search, download and screen. Returns (cases to profile, discovery record for the report)."""
     before = model.stats["cached"]
-    searches = model.ask("case_search_v1", f"<expert>\n{expert_view(expert)}\n</expert>", discover.parse_searches, 1000)
+    searches = model.ask("case_search_v1", f"<expert>\n{expert_view(expert)}\n</expert>", discover.parse_searches, 1000,
+                         label="Search terms")
     step(log, "plan", "Search terms", model, before, "; ".join(s["label"] for s in searches))
     found, seen = [], set()
     for s in searches:
@@ -175,6 +192,9 @@ def find_cases(model, search, expert, keep, pdf_dir, log, per_search=8):
         seen.update(r["docket_id"] for r in fresh)
         found += [{**r, "found_by": s["label"]} for r in fresh]
         s.update(results=len(rows), taken=len(fresh))
+        model.record("courtlistener_search", s["label"], query=discover.query(s["terms"]), cached=cached,
+                     results=[{k: r.get(k) for k in ("name", "court", "filed", "url", "description")} for r in rows],
+                     taken=[r["url"] for r in fresh])
         log({"stage": "search", "label": s["label"], "detail": f"{len(rows)} complaints found, {len(fresh)} new taken",
              "cached": cached})
     candidates = []
@@ -192,7 +212,7 @@ def find_cases(model, search, expert, keep, pdf_dir, log, per_search=8):
     before = model.stats["cached"]
     screened = model.ask("case_screen_v1", f"<expert>\n{expert_view(expert, items=False)}\n</expert>\n<candidates>\n"
                          f"{json.dumps(listing, ensure_ascii=False, indent=1)}\n</candidates>",
-                         discover.parse_screen, 6000) if listing else {}
+                         discover.parse_screen, 6000, label="Screening") if listing else {}
     for n, case in enumerate(candidates, 1):
         verdict = screened.get(f"C{n}") or {"relevant": False, "domains": [], "case_type": None,
                                             "reason": "Not assessed by the screening step."}
@@ -231,14 +251,14 @@ def load_case(model, case, base, limit, log):
     return case, profile
 
 
-def run(model, cv_paths, cases, base, limit, log=print, search=None, keep=6, pdf_dir=None):
+def run(model, cv_paths, cases, base, limit, log=print, search=None, keep=6, pdf_dir=None, cv_name=None):
     """log receives one dict per finished step: stage, label, detail, cached (and total_hint after screening).
 
     With a search (CourtListenerSearch), new cases are found for each expert and added to `cases`."""
     experts = []
     for path in cv_paths:
         before = model.stats["cached"]
-        expert = expert_profile(model, path)
+        expert = expert_profile(model, path, cv_name)
         step(log, "expert", expert["name"], model, before,
              f"{len(expert['items'])} experience items verified, {len(expert['dropped'])} dropped")
         pool, discovery = list(cases), None
@@ -255,7 +275,8 @@ def run(model, cv_paths, cases, base, limit, log=print, search=None, keep=6, pdf
             elif not profile["issues"]:
                 result = matching.insufficient("No issue in the case document could be verified.")
             else:
-                parsed = model.ask("case_match_v1", match_input(expert, case, profile), matching.parse_match, 4000)
+                parsed = model.ask("case_match_v1", match_input(expert, case, profile), matching.parse_match, 4000,
+                                   label=case["name"])
                 result = matching.enforce(parsed, expert, profile)
             results.append({"case": case, "profile": profile, "match": result,
                             "score": matching.score(result, profile, case)})
@@ -316,6 +337,7 @@ def main(argv=None):
     stamp = datetime.now(timezone.utc)
     stem = args.out / f"report_{stamp:%Y%m%dT%H%M%S}"
     stem.with_suffix(".json").write_text(json.dumps(experts, ensure_ascii=False, indent=2), encoding="utf-8")
+    Path(f"{stem}_trace.json").write_text(json.dumps(model.trace, ensure_ascii=False), encoding="utf-8")
     stem.with_suffix(".html").write_text(render(experts, f"{stamp:%Y-%m-%d %H:%M} UTC", settings.model), encoding="utf-8")
     s = model.stats
     print(f"model {settings.model} · calls {s['calls']} · cached {s['cached']} · tokens in {s['input_tokens']} out {s['output_tokens']}")

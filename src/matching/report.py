@@ -29,7 +29,9 @@ q,.q{display:block;background:var(--quote);border-left:3px solid var(--line);pad
 pre{white-space:pre-wrap;font:13px/1.5 inherit;font-family:inherit;background:var(--quote);padding:8px;border-radius:4px;margin:6px 0 0}
 a{color:inherit}ul{margin:4px 0;padding-left:18px}.legend{font-size:12px;color:var(--muted);margin-top:16px}
 button.copy{margin-top:6px;font:inherit;font-size:12px;padding:2px 10px;border:1px solid var(--line);border-radius:6px;background:var(--card);color:var(--fg);cursor:pointer}
-nav{display:flex;gap:16px;align-items:center;margin-bottom:16px;font-size:13px}
+nav{display:flex;gap:16px;align-items:center;margin-bottom:12px;font-size:13px;flex-wrap:wrap}
+nav.tabs{gap:4px;border-bottom:1px solid var(--line);padding-bottom:8px;margin-bottom:16px}
+.tab{padding:4px 10px;border-radius:6px;text-decoration:none}.tab.on{background:var(--fg);color:var(--bg)}
 h3{font-size:15px;margin:20px 0 4px}details.group{margin-top:16px}details.group>summary{font-size:15px}
 .filters{margin:10px 0}.chip{font:inherit;font-size:12px;margin:2px;padding:2px 10px;border-radius:12px;border:1px solid var(--line);background:var(--bg);color:var(--fg);cursor:pointer}
 .chip.on{background:var(--fg);color:var(--bg)}.score{font-size:12px;margin-top:4px}code{font-size:12px}

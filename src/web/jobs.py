@@ -90,13 +90,14 @@ class Jobs:
                 status["total"] = len(status["steps"]) + 2 * (len(self.cases) + item["total_hint"])
             write_json(folder / "status.json", status)
 
+        model = None
         try:
             status["state"] = "running"
             write_json(folder / "status.json", status)
             model = Model(self.settings, self.data_dir / "cache")
             search = make_search(self.env, self.data_dir) if status.get("find") else None
             experts = run(model, [folder / "cv.pdf"], self.cases, self.base, self.limit, log, search, self.keep,
-                          self.data_dir / "pdfs")
+                          self.data_dir / "pdfs", cv_name=status["cv"])
             write_json(folder / "result.json", experts)
             status.update(state="done", stats=model.stats)
         except LLMError as exc:
@@ -105,6 +106,12 @@ class Jobs:
             status.update(state="failed", error=f"{type(exc).__name__}: {exc}")
             (folder / "error.txt").write_text(traceback.format_exc(), encoding="utf-8")
         finally:
+            if model is not None:  # Kept for failed runs too: the inspection pages show how far it got.
+                write_json(folder / "trace.json", model.trace)
             status["finished"] = now()
             write_json(folder / "status.json", status)
             self.active = None
+
+    def trace(self, run_id):
+        path = self.folder(run_id) / "trace.json"
+        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
