@@ -60,7 +60,13 @@ def daily_view(jobs):
             days.setdefault(f"{ran:%Y-%m-%d}", []).append({
                 "run": r["id"], "cv": r["cv"], "name": expert["profile"]["name"], "time": f"{ran:%H:%M}",
                 "since": discovery.get("since"), "skipped": discovery.get("skipped", 0), "found": len(candidates),
-                "screened_out": sum(1 for c in candidates if not (c.get("screen") or {}).get("relevant")),
+                "screened_out": sum(1 for c in candidates if not (c.get("screen") or {}).get("relevant")
+                                    and not (c.get("screen") or {}).get("unclear")),
+                "without_pdf": sum(1 for c in candidates if c.get("has_pdf") is False),
+                "unclear": sum(1 for c in candidates if (c.get("screen") or {}).get("unclear")),
+                "wanted": [{"name": c["name"], "url": c["url"], "court": c.get("court"), "filed": c.get("filed"),
+                            "cost": c.get("cost") or 3, "reason": c["screen"]["reason"]} for c in candidates
+                           if c.get("has_pdf") is False and (c.get("screen") or {}).get("relevant")],
                 "cases": [{"name": x["case"]["name"], "url": x["case"].get("url"), "court": x["case"].get("court"),
                            "filed": x["case"].get("filed"), "tier": x["match"]["tier"],
                            "label": LABELS[x["match"]["tier"]], "score": x["score"]["total"],

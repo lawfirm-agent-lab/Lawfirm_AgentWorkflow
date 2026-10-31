@@ -17,7 +17,8 @@ ENV = {"LLM_PROVIDER": "openai_compatible", "LLM_BASE_URL": "http://localhost:1"
 
 def row(n):
     return {"docket_id": n, "name": f"Case {n}", "court": "NVD", "filed": "2026-10-29", "url": f"https://cl/docket/{n}/",
-            "document_label": "Complaint", "document_url": None, "description": "COMPLAINT", "filepath": f"{n}.pdf"}
+            "document_label": "Complaint", "document_url": None, "description": "COMPLAINT", "filepath": f"{n}.pdf",
+            "has_pdf": n != 3, "page_count": None, "pacer_doc_id": f"0{n}"}
 
 
 class FakeModel:
@@ -33,7 +34,8 @@ class FakeModel:
         if prompt_name == "case_search_v1":
             return [{"label": "Casino", "terms": "casino"}]
         self.screened = user
-        return {"C1": {"relevant": True, "domains": [], "case_type": "Class action", "reason": "Fits."}}
+        return {"C1": {"relevant": True, "unclear": False, "domains": [], "case_type": "Class action", "reason": "Fits."},
+                "C2": {"relevant": True, "unclear": False, "domains": [], "case_type": "Patent", "reason": "Docket names a patent."}}
 
 
 def daily_run(root, run_id, cv, started, urls):
@@ -57,7 +59,7 @@ class DailyTests(unittest.TestCase):
 
     def test_cases_already_shown_are_not_taken_again(self):
         search = MagicMock(days=1, **{"since.return_value": date(2026, 10, 30)})
-        search.search.return_value = ([row(1), row(2)], False)
+        search.search.return_value = ([row(1), row(2), row(3)], False)
         search.download.side_effect = lambda case, pdf_dir: Path("/nonexistent") / case["filepath"]
         model = FakeModel()
         expert = {"name": "Jane", "headline": "", "domains": [], "items": []}
@@ -66,8 +68,11 @@ class DailyTests(unittest.TestCase):
         self.assertEqual([c["url"] for c in cases], ["https://cl/docket/2/"])
         self.assertEqual(record["skipped"], 1)
         self.assertEqual(record["since"], "2026-10-30")
-        self.assertEqual(search.download.call_count, 1)
+        self.assertEqual(search.download.call_count, 1)  # Case 3 has no PDF: screened on its docket text only.
         self.assertNotIn("Case 1", model.screened)
+        self.assertIn('"complaint": "not available"', model.screened)
+        no_pdf = next(c for c in record["candidates"] if c["url"] == "https://cl/docket/3/")
+        self.assertEqual((no_pdf["kept"], no_pdf["cost"], record["cost"]), (False, 3.0, 3.0))
 
     def test_today_page_and_shown_cases(self):
         with tempfile.TemporaryDirectory() as directory:

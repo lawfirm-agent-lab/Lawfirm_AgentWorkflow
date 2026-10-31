@@ -3,14 +3,14 @@
 {% block body %}
 <nav><a href="{{ url_for('index') }}">← Home</a></nav>
 <h1>New cases by day</h1>
-<div class="muted">Each daily check searches complaints filed in a recent window for one saved CV, skips cases earlier checks already showed, and reads and matches the relevant ones. "Filed" is the date the complaint was filed in court; "Checked" is when this system found it.</div>
+<div class="muted">Each daily check searches complaints filed in a recent window for one saved CV, skips cases earlier checks already showed, and reads and matches the relevant ones. About half of new complaints have no PDF on CourtListener yet; those are screened on the case name and docket text, and the possibly relevant ones are listed with the cost of buying the complaint. "Filed" is the date the complaint was filed in court; "Checked" is when this system found it.</div>
 {% if busy %}<div class="card run">A run is in progress; refresh when it finishes.</div>{% endif %}
 {% for day, checks in days %}
   <h2>Checked {{ day }}</h2>
   {% for c in checks %}
   <div class="card">
     <b>{{ c.name }}</b> <span class="muted">· {{ c.cv }} · {{ c.time }} · complaints filed since {{ c.since }}</span>
-    <div class="muted">{{ c.found }} new complaints found{% if c.skipped %} ({{ c.skipped }} shown before, left out){% endif %} · {{ c.screened_out }} screened out · {{ c.cases|length }} read and matched · <a href="{{ url_for('result', run_id=c.run) }}">full results</a> · <a href="{{ url_for('inspect', run_id=c.run, step='search') }}">steps</a></div>
+    <div class="muted">{{ c.found }} new complaints found ({{ c.without_pdf }} without a PDF){% if c.skipped %}, {{ c.skipped }} shown before left out{% endif %} · {{ c.screened_out }} screened out{% if c.unclear %} · {{ c.unclear }} can't tell{% endif %} · {{ c.cases|length }} read and matched · <a href="{{ url_for('result', run_id=c.run) }}">full results</a> · <a href="{{ url_for('inspect', run_id=c.run, step='search') }}">steps</a></div>
     {% if c.cases %}
     <div class="wrap"><table><thead><tr><th>Case</th><th>Filed</th><th>Match</th><th>Score</th><th>Why</th></tr></thead><tbody>
     {% for x in c.cases %}<tr><td>{% if x.url %}<a href="{{ x.url }}">{{ x.name }}</a>{% else %}{{ x.name }}{% endif %}<div class="muted">{{ x.court or "" }}</div></td>
@@ -18,7 +18,15 @@
       <td><span class="{{ 'ok' if x.tier == 'high' else 'run' if x.tier == 'medium' else 'muted' }}">{{ x.label }}</span></td>
       <td>{{ x.score }}</td><td class="small">{{ x.summary }}</td></tr>{% endfor %}
     </tbody></table></div>
-    {% else %}<div class="muted">No new relevant case in this window.</div>{% endif %}
+    {% elif not c.wanted %}<div class="muted">No new relevant case in this window.</div>{% endif %}
+    {% if c.wanted %}
+    <h3>Possibly relevant, complaint not on CourtListener ({{ c.wanted|length }}, PACER ≤ ${{ "%.2f"|format(c.wanted|sum(attribute="cost")) }})</h3>
+    <div class="muted small">Judged from the case name and docket text only. Nothing is bought automatically.</div>
+    <div class="wrap"><table><thead><tr><th>Case</th><th>Filed</th><th>PACER cost</th><th>Why (docket text only)</th></tr></thead><tbody>
+    {% for w in c.wanted %}<tr><td><a href="{{ w.url }}">{{ w.name }}</a><div class="muted">{{ w.court or "" }}</div></td><td>{{ w.filed or "" }}</td>
+      <td>≤ ${{ "%.2f"|format(w.cost) }}</td><td class="small">{{ w.reason }}</td></tr>{% endfor %}
+    </tbody></table></div>
+    {% endif %}
   </div>
   {% endfor %}
 {% else %}

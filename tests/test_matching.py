@@ -124,8 +124,27 @@ class DiscoveryTests(unittest.TestCase):
         found = discover.candidate(row)
         self.assertEqual((found["docket_id"], found["court"]), (75035063, "NVD"))
         self.assertTrue(found["name"].startswith("Aristocrat Interactive Sa Rl v. New"))
+        self.assertTrue(found["has_pdf"])
         self.assertIsNone(discover.candidate({**row, "attachment_number": 2}))
-        self.assertIsNone(discover.candidate({**row, "filepath_local": "../../etc/passwd"}))
+        unsafe = discover.candidate({**row, "filepath_local": "../../etc/passwd"})
+        self.assertEqual((unsafe["has_pdf"], unsafe["filepath"], unsafe["document_url"]), (False, None, None))
+
+    def test_candidate_without_pdf(self):
+        row = {"absolute_url": "/docket/75050001/1/clay-v-discover-products-inc/", "filepath_local": "", "is_available": False,
+               "attachment_number": None, "entry_date_filed": "2026-10-30", "pacer_doc_id": "047012345",
+               "description": "COMPLAINT against Discover Products Inc. (Filing fee $405 receipt number AFLMDC-25785759)"}
+        found = discover.candidate(row)
+        self.assertEqual((found["has_pdf"], found["court"], found["pacer_doc_id"]), (False, "FLMD", "047012345"))
+        self.assertEqual(discover.pacer_cost(None), 3.0)
+        self.assertEqual(discover.pacer_cost(12), 1.2)
+        self.assertEqual(discover.pacer_cost(70), 3.0)
+
+    def test_screen_unclear(self):
+        raw = json.dumps({"candidates": [{"id": "C1", "relevant": "unclear", "domains": [], "case_type": "Patent", "reason": "?"},
+                                         {"id": "C2", "relevant": True, "domains": [], "case_type": "Patent", "reason": "Fits."}]})
+        screened = discover.parse_screen(raw)
+        self.assertEqual((screened["C1"]["relevant"], screened["C1"]["unclear"]), (False, True))
+        self.assertEqual((screened["C2"]["relevant"], screened["C2"]["unclear"]), (True, False))
 
     def test_diverse_limits_one_case_type(self):
         cases = [{"n": i, "screen": {"case_type": "Class action" if i < 5 else "Patent"}} for i in range(7)]
@@ -139,6 +158,9 @@ class DiscoveryTests(unittest.TestCase):
             self.assertEqual(search.search("casino"), ([], False))
             self.assertEqual(search.search("casino"), ([], True))
             self.assertEqual(budget.acquire.call_count, 1)
+            session.get.side_effect = TimeoutError("read timed out")
+            with self.assertRaises(discover.DiscoveryError):
+                search.search("dice")
             budget.acquire.return_value = False
             with self.assertRaises(discover.DiscoveryError):
                 search.search("poker")

@@ -2,11 +2,15 @@
 
 1. The model writes up to 3 keyword searches from the expert profile (case_search_v1).
 2. Each search is one CourtListener request (RECAP document search): main complaint documents
-   (document 1) filed in the last `days`, with a PDF available, best matches first.
-3. Each candidate's PDF is downloaded from storage.courtlistener.com (public, no token, not
+   (document 1, no attachments) filed in the last `days`, best matches first. About half of new
+   complaints have no PDF on CourtListener yet; for those only the case name and the docket
+   description are known.
+3. Each candidate with a PDF is downloaded from storage.courtlistener.com (public, no token, not
    counted against the API budget) and its first pages are extracted.
-4. The model screens all candidates in one call (case_screen_v1); relevant ones, up to `keep`,
-   become cases for the normal profile and match steps. Rejected ones are kept with the reason.
+4. The model screens all candidates in one call (case_screen_v1): relevant, not relevant, or
+   unclear. Relevant ones with a PDF, up to `keep`, become cases for the normal profile and match
+   steps. Relevant ones without a PDF are listed as worth getting, with the PACER cost of buying
+   the complaint (nothing is bought). Rejected ones are kept with the reason.
 
 API requests go through RequestBudget with a local ledger, capped well below the account's
 daily limit because the cloud pipeline shares it. Search results are cached for the day.
@@ -28,7 +32,11 @@ FILEPATH = re.compile(r"recap/gov\.uscourts\.([a-z0-9]+)\.\d+/[A-Za-z0-9._-]+\.p
 DOCKET_URL = re.compile(r"/docket/(\d+)/\d+/([a-z0-9-]+)/")
 TERMS = re.compile(r'[A-Za-z0-9 "\'&/.-]+')
 CASE_NUMBER = re.compile(r"Case:?\s+(\d:\d{2}-[a-z]{2}-\d{3,6})", re.I)
+# Filing fee receipts name the court: "receipt number AWAWDC-10110117" is W.D. Wash. (WAWD).
+RECEIPT = re.compile(r"\bA([A-Z]{2,4})C-\d{5,}")
 MAX_PDF_BYTES = 40 * 1024 * 1024
+# PACER: $0.10 a page, at most $3.00 a document; no bill when a quarter's total is $30 or less.
+PAGE_FEE, DOCUMENT_CAP, FREE_PER_QUARTER = 0.10, 3.00, 30.00
 
 
 class DiscoveryError(RuntimeError):
@@ -49,12 +57,17 @@ def parse_searches(raw):
 
 
 def query(terms):
-    return f"document_number:1 AND description:complaint AND ({terms})"
+    return f"document_number:1 AND description:complaint AND NOT attachment_number:[1 TO 99999] AND ({terms})"
+
+
+def pacer_cost(pages):
+    """What buying one document on PACER costs; the cap when the page count is unknown."""
+    return round(min(PAGE_FEE * pages, DOCUMENT_CAP), 2) if pages else DOCUMENT_CAP
 
 
 def parse_screen(raw):
     data = load(raw)
-    return {item.get("id"): {"relevant": item.get("relevant") is True,
+    return {item.get("id"): {"relevant": item.get("relevant") is True, "unclear": item.get("relevant") == "unclear",
                              "domains": [d for d in (item.get("domains") or [])[:2] if d in DOMAINS],
                              "case_type": text(item.get("case_type"), 80, "case_type", required=False),
                              "reason": text(item.get("reason"), 200, "reason")}
@@ -90,16 +103,21 @@ def title(slug):
 
 
 def candidate(row):
-    """A search result as a case dict, or None if it is not a usable main complaint."""
+    """A search result as a case dict, or None if it is not a main complaint. has_pdf: the
+    complaint is on CourtListener; otherwise only the docket description is known."""
     path, url = row.get("filepath_local") or "", row.get("absolute_url") or ""
     court, link = FILEPATH.fullmatch(path), DOCKET_URL.fullmatch(url)
-    if not (row.get("is_available") and court and link and row.get("attachment_number") is None):
+    if not link or row.get("attachment_number") is not None:
         return None
-    return {"docket_id": int(link[1]), "name": title(link[2]), "court": court[1].upper(),
+    description = " ".join(str(row.get("description") or "").split())[:600]
+    has_pdf = bool(row.get("is_available") and court)
+    receipt = RECEIPT.search(description)
+    return {"docket_id": int(link[1]), "name": title(link[2]),
+            "court": court[1].upper() if court else receipt[1] if receipt else "",
             "filed": row.get("entry_date_filed"), "url": f"{SITE}/docket/{link[1]}/{link[2]}/",
-            "document_label": "Complaint (ECF No. 1)", "document_url": STORAGE + path,
-            "description": " ".join(str(row.get("description") or "").split())[:600],
-            "page_count": row.get("page_count"), "filepath": path}
+            "document_label": "Complaint (ECF No. 1)", "document_url": STORAGE + path if has_pdf else None,
+            "description": description, "page_count": row.get("page_count"), "filepath": path if has_pdf else None,
+            "has_pdf": has_pdf, "pacer_doc_id": row.get("pacer_doc_id")}
 
 
 class CourtListenerSearch:
@@ -113,7 +131,7 @@ class CourtListenerSearch:
 
     def search(self, terms):
         """Returns (cases, cached). One API request unless the same search ran today."""
-        params = {"type": "rd", "q": query(terms), "order_by": "score desc", "available_only": "on",
+        params = {"type": "rd", "q": query(terms), "order_by": "score desc",
                   "filed_after": self.since().isoformat()}
         key = hashlib.sha256(json.dumps([params, self.today().isoformat()]).encode()).hexdigest()
         path = self.cache_dir / f"search-{key}.json"
@@ -123,7 +141,10 @@ class CourtListenerSearch:
         else:
             if not self.budget.acquire():
                 raise DiscoveryError("CourtListener request budget for local runs is used up for now")
-            response = self.session.get(SEARCH, params=params, timeout=(10, 30), allow_redirects=False)
+            try:
+                response = self.session.get(SEARCH, params=params, timeout=(10, 30), allow_redirects=False)
+            except OSError as exc:  # requests' timeouts and connection errors
+                raise DiscoveryError(f"CourtListener search failed: {type(exc).__name__}") from None
             if response.status_code == 429:
                 self.budget.block()
                 raise DiscoveryError("CourtListener returned HTTP 429; requests paused")
@@ -143,15 +164,18 @@ class CourtListenerSearch:
         target = pdf_dir / case["filepath"].replace("/", "_")
         if target.exists():
             return target
-        response = self.session.get(STORAGE + case["filepath"], timeout=(10, 60), allow_redirects=False,
-                                    headers={"Authorization": None}, stream=True)
-        if response.status_code != 200:
-            raise DiscoveryError(f"Download returned HTTP {response.status_code}")
-        body = b""
-        for chunk in response.iter_content(1024 * 256):
-            body += chunk
-            if len(body) > MAX_PDF_BYTES:
-                raise DiscoveryError("PDF is too large")
+        try:
+            response = self.session.get(STORAGE + case["filepath"], timeout=(10, 60), allow_redirects=False,
+                                        headers={"Authorization": None}, stream=True)
+            if response.status_code != 200:
+                raise DiscoveryError(f"Download returned HTTP {response.status_code}")
+            body = b""
+            for chunk in response.iter_content(1024 * 256):
+                body += chunk
+                if len(body) > MAX_PDF_BYTES:
+                    raise DiscoveryError("PDF is too large")
+        except OSError as exc:
+            raise DiscoveryError(f"Download failed: {type(exc).__name__}") from None
         if not body.startswith(b"%PDF-"):
             raise DiscoveryError("Download is not a PDF")
         target.write_bytes(body)

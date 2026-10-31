@@ -16,7 +16,7 @@ STYLE = """
 --quote:#1c232b;--high:#3fb950;--medium:#d29922;--low:#9aa7b3;--none:#6e7681;--insufficient:#a371f7;--warn:#f85149}}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 -apple-system,Segoe UI,Helvetica,Arial,sans-serif}
 main{max-width:1400px;margin:0 auto;padding:24px 16px}h1{font-size:22px;margin:0 0 4px}h2{font-size:18px;margin:32px 0 4px}
-.muted{color:var(--muted)}.expert{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px 16px;margin:8px 0 12px}
+.muted{color:var(--muted)}.small{font-size:12px}.expert{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px 16px;margin:8px 0 12px}
 .wrap{overflow-x:auto}table{border-collapse:collapse;width:100%;min-width:1100px}th,td{border-top:1px solid var(--line);padding:10px 8px;vertical-align:top;text-align:left}
 th{font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted)}td.case{width:22%}td.judge{width:16%}td.reasons{width:32%}td.src{width:12%}td.mail{width:18%}
 .tier{display:inline-block;font-weight:600;border-radius:12px;padding:1px 10px;color:#fff;font-size:12px}
@@ -155,7 +155,7 @@ def discovery_block(discovery):
 
     def listing(values):
         return "".join(f"<li><a href='{e(c['url'])}'>{e(c['name'])}</a> <span class='muted'>({e(c['court'])}, filed {e(c['filed'])}, "
-                       f"via {e(c['found_by'])})</span><br><span class='muted'>{e((c.get('screen') or {}).get('reason') or c.get('download_error'))}"
+                       f"via {e(c['found_by'])}{'' if c.get('has_pdf', True) else ', no PDF'})</span><br><span class='muted'>{e((c.get('screen') or {}).get('reason') or c.get('download_error'))}"
                        f"</span></li>" for c in values)
     later = [c for c in relevant if not c.get("kept")]
     rejected = [c for c in candidates if not (c.get("screen") or {}).get("relevant")]
@@ -185,6 +185,27 @@ def filters(results):
     return f"<div class='filters'><span class='lbl'>Filter</span> <button type='button' class='chip on' onclick='filterRows(this)' data-tag=''>All</button>{chips}</div>"
 
 
+def without_pdf_block(discovery):
+    """Cases screening found relevant (or unclear) from the docket text alone: worth getting the complaint."""
+    candidates = (discovery or {}).get("candidates") or []
+    wanted = [c for c in candidates if c.get("has_pdf") is False and (c.get("screen") or {}).get("relevant")]
+    unclear = [c for c in candidates if c.get("has_pdf") is False and (c.get("screen") or {}).get("unclear")]
+    if not (wanted or unclear):
+        return ""
+
+    def listing(values):
+        return "".join(f"<li><a href='{e(c['url'])}'>{e(c['name'])}</a> <span class='muted'>({e(c['court'] or 'court unknown')}, "
+                       f"filed {e(c['filed'])}, PACER ≤ ${c.get('cost') or 3:.2f})</span><br>{e(c['screen']['reason'])}"
+                       f"<div class='muted small'>Docket text: {e(c.get('description') or '')}</div></li>" for c in values)
+    cost = sum(c.get("cost") or 3 for c in wanted)
+    return (f"<h3>Complaint not on CourtListener: possibly relevant {len(wanted)}</h3>"
+            f"<div class='muted'>Judged from the case name and docket text only; not matched in full. Buying these "
+            f"complaints on PACER would cost at most ${cost:.2f} ($0.10 a page, $3 cap a document; no bill for a quarter "
+            f"totalling $30 or less). Nothing is bought automatically.</div><ul>{listing(wanted)}</ul>"
+            + (f"<details><summary>Can't tell from the docket text ({len(unclear)})</summary><ul>{listing(unclear)}</ul></details>"
+               if unclear else ""))
+
+
 def render(experts, generated, model, nav=""):
     """nav: optional trusted HTML shown above the title (links back into the local web app)."""
     sections = []
@@ -210,6 +231,7 @@ def render(experts, generated, model, nav=""):
             f"<section><h2>{e(profile['name'])}</h2><div class='expert'><div>{e(profile['headline'])}</div><div>{tags(profile['domains'])}</div>"
             f"<details><summary>{len(profile['items'])} verified experience items from the CV</summary><ul>{items}</ul></details></div>"
             f"{discovery_block(expert.get('discovery'))}<div>{summary}</div>{filters(results)}{''.join(groups)}"
+            f"{without_pdf_block(expert.get('discovery'))}"
             f"<div class='legend'>Ranked by tier, then score within the tier. Score = evidence (2 per direct + 1 per related "
             f"verified reason) + 1 if the document itself states the expertise is needed + share of technical issues + recency "
             f"(1 if filed within 90 days, 0.5 within a year).</div></section>")

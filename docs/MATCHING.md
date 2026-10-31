@@ -14,11 +14,14 @@ Expert CV (PDF)
 │      testimony, certification, education, skill, award), each with a verified quote and page
 ├── 2. Find cases (optional, --find-cases or the web checkbox)
 │   ├── model writes up to 3 keyword searches from the CV            (case_search_v1)
-│   ├── CourtListener RECAP search: complaints (document 1) filed in the last year,
-│   │   PDF available, best matches first — 1 API request per search
-│   ├── download each candidate's complaint from public storage (no token, not counted)
-│   └── model screens all candidates on their first pages (case_screen_v1);
-│       relevant ones are kept, at most 3 of one case type first, up to 6
+│   ├── CourtListener RECAP search: main complaints (document 1, no attachments) filed in
+│   │   the window (last year, or 1/3/7 days for daily checks), with or without a PDF,
+│   │   best matches first — 1 API request per search
+│   ├── download each candidate's complaint that has a PDF from public storage (no token, not counted)
+│   └── model screens all candidates (case_screen_v1): on their first pages, or on the case name
+│       and docket text when there is no PDF; relevant / not relevant / unclear.
+│       Relevant ones with a PDF are kept, at most 3 of one case type first, up to 6.
+│       Relevant ones without a PDF are listed with the PACER cost (see PDF_ACCESS.md)
 ├── 3. Understand each case (fixed pool + found) → plain-English profile (case_profile_v1):
 │      parties, case type, summary, technology, issues I1…, expertise areas X1…
 │      ("stated" by the document or "inferred"), counsel. Quotes verified.
@@ -66,7 +69,7 @@ Uploaded CVs can be saved to `data/matching/cvs/` ("Save this CV for daily check
 
 Daily checks are started by hand (web button or the command above). Running them on a schedule in the cloud is the next step.
 
-First real check (2026-10-30, Mark C. Nicely, filed since 2026-10-29): 3 searches → 4 complaints with a PDF → none relevant (two generic e-commerce patent suits, a genetic-testing patent case, a county ordinance case). A one-day window returns few complaints because the search only finds complaints whose PDF is already on CourtListener; most new complaints have none yet. Handling cases without a PDF is the next piece of work.
+First real check (2026-10-30, Mark C. Nicely, filed since 2026-10-29): 3 searches → 4 complaints with a PDF → none relevant (two generic e-commerce patent suits, a genetic-testing patent case, a county ordinance case). Second check (Matt Linton, same window, searches now include complaints without a PDF): 4 complaints → 2 read in full, both Medium (Google LLC v. Does 1–8, credential phishing; Quectel v. Telit, remote access to IoT modules). All 4 had a PDF: keyword search rarely finds complaints without one, because only their one-line docket text is searchable. See [PDF_ACCESS.md](PDF_ACCESS.md) for the measured share, ways to get them, cost and the proposed daily listing.
 
 - Sample CVs: put PDFs in `data/matching/cvs/` (the two public CVs used so far are there locally).
 - Fixed case pool: [eval/matching_cases.json](../eval/matching_cases.json) (saved CourtListener entries or a local PDF per case).

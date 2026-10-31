@@ -32,23 +32,24 @@
   {% if p.dropped %}<h3>Dropped (quote not found)</h3><ul>{% for d in p.dropped %}<li>p. {{ d.page }} — {{ d.reason }}: <span class="quote">{{ d.quote }}</span></li>{% endfor %}</ul>{% endif %}
   {% endif %}
 {% elif step == "search" %}
-  <div class="muted">The expert profile goes to the model, which writes keyword searches. Each search is sent to CourtListener (complaints filed in the last year with a PDF). Check: do the searches fit the CV, and are the results the kind of case intended?</div>
+  <div class="muted">The expert profile goes to the model, which writes keyword searches. Each search is sent to CourtListener (main complaints filed in the search window, with or without a PDF). Up to 8 results per search that earlier searches or daily checks did not already find are picked for screening. Check: do the searches fit the CV, and are the results the kind of case intended?</div>
   {% for call in calls %}{{ io(call, "Expert profile sent to the model") }}{% endfor %}
   {% for t in trace if t.step == "courtlistener_search" %}
     <h2>{{ t.label }} · {{ t.results|length }} results{% if t.cached %} <span class="muted">(cached)</span>{% endif %}</h2>
     <div class="muted">Query: <code>{{ t.query }}</code></div>
-    <div class="wrap"><table><thead><tr><th>Case</th><th>Court</th><th>Filed</th><th>Taken</th><th>Docket entry</th></tr></thead><tbody>
+    <div class="wrap"><table><thead><tr><th>Case</th><th>Court</th><th>Filed</th><th>PDF</th><th>Picked for screening</th><th>Docket entry</th></tr></thead><tbody>
     {% for r in t.results %}<tr><td><a href="{{ r.url }}">{{ r.name }}</a></td><td>{{ r.court }}</td><td>{{ r.filed }}</td>
-      <td>{{ "yes" if r.url in t.taken else "—" }}</td><td class="muted small">{{ r.description[:220] }}</td></tr>{% endfor %}
+      <td>{{ "no" if r.has_pdf == false else "yes" }}</td><td>{{ "yes" if r.url in t.taken else "—" }}</td><td class="muted small">{{ r.description[:220] }}</td></tr>{% endfor %}
     </tbody></table></div>
   {% else %}<div class="muted">Case search was not used in this run.</div>{% endfor %}
 {% elif step == "screen" %}
-  <div class="muted">The first pages of every candidate complaint go to the model in one call; it marks each relevant or not, with a reason. Up to 6 relevant ones (at most 3 of one case type first) are read in full. Check: are rejections and acceptances right?</div>
+  <div class="muted">Every candidate goes to the model in one call: the first pages of the complaint when CourtListener has the PDF, otherwise only the case name and docket text. It marks each relevant, not relevant or unclear, with a reason. Up to 6 relevant ones with a PDF (at most 3 of one case type first) are read in full; relevant ones without a PDF are listed as worth getting. Check: are rejections and acceptances right?</div>
   {% for call in calls %}{{ io(call, "Candidates sent to the model") }}{% endfor %}
   {% if expert and expert.discovery %}
-  <div class="wrap"><table><thead><tr><th>Case</th><th>Verdict</th><th>Read in full</th><th>Type</th><th>Reason (model)</th></tr></thead><tbody>
+  <div class="wrap"><table><thead><tr><th>Case</th><th>PDF</th><th>Verdict</th><th>Read in full</th><th>Type</th><th>Reason (model)</th></tr></thead><tbody>
   {% for c in expert.discovery.candidates %}<tr><td><a href="{{ c.url }}">{{ c.name }}</a><div class="muted">{{ c.court }} · {{ c.filed }} · via {{ c.found_by }}</div></td>
-    <td>{% if c.screen %}{% if c.screen.relevant %}<span class="ok">relevant</span>{% else %}<span class="warn">not relevant</span>{% endif %}{% else %}<span class="warn">{{ c.download_error or "not screened" }}</span>{% endif %}</td>
+    <td>{% if c.has_pdf == false %}no · PACER ≤ ${{ "%.2f"|format(c.cost or 3) }}{% else %}yes{% endif %}</td>
+    <td>{% if c.screen %}{% if c.screen.relevant %}<span class="ok">relevant</span>{% elif c.screen.unclear %}<span class="run">unclear</span>{% else %}<span class="warn">not relevant</span>{% endif %}{% else %}<span class="warn">{{ c.download_error or "not screened" }}</span>{% endif %}</td>
     <td>{{ "yes" if c.kept else "—" }}</td><td>{{ (c.screen or {}).case_type or "" }}</td><td>{{ (c.screen or {}).reason or "" }}</td></tr>{% endfor %}
   </tbody></table></div>
   {% else %}<div class="muted">Case search was not used in this run.</div>{% endif %}

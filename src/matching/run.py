@@ -197,40 +197,47 @@ def find_cases(model, search, expert, keep, pdf_dir, log, per_search=8, skip=())
         found += [{**r, "found_by": s["label"]} for r in fresh]
         s.update(results=len(rows), taken=len(fresh))
         model.record("courtlistener_search", s["label"], query=discover.query(s["terms"]), cached=cached,
-                     results=[{k: r.get(k) for k in ("name", "court", "filed", "url", "description")} for r in rows],
+                     results=[{k: r.get(k) for k in ("name", "court", "filed", "url", "description", "has_pdf")} for r in rows],
                      taken=[r["url"] for r in fresh])
         log({"stage": "search", "label": s["label"], "detail": f"{len(rows)} complaints found, {len(fresh)} new taken"
              + (f", {len(known)} seen before" if known else ""), "cached": cached})
     candidates = []
     for case in found:
-        try:
-            case["pdf"] = str(search.download(case, pdf_dir))
-        except discover.DiscoveryError as exc:
-            case["download_error"] = str(exc)
-            continue
-        case["excerpt"] = discover.first_pages(case["pdf"])
-        case["docket_number"] = discover.case_number(case["excerpt"])
+        if case["has_pdf"]:
+            try:
+                case["pdf"] = str(search.download(case, pdf_dir))
+            except discover.DiscoveryError as exc:
+                case["download_error"] = str(exc)
+                continue
+            case["excerpt"] = discover.first_pages(case["pdf"])
+            case["docket_number"] = discover.case_number(case["excerpt"])
+        else:
+            case["cost"] = discover.pacer_cost(case.get("page_count"))
         candidates.append(case)
     listing = [{"id": f"C{n}", "name": c["name"], "court": c["court"], "filed": c["filed"], "description": c["description"],
-                "first_pages": c["excerpt"]} for n, c in enumerate(candidates, 1)]
+                **({"first_pages": c["excerpt"]} if c["has_pdf"] else {"complaint": "not available"})}
+               for n, c in enumerate(candidates, 1)]
     before = model.stats["cached"]
     screened = model.ask("case_screen_v1", f"<expert>\n{expert_view(expert, items=False)}\n</expert>\n<candidates>\n"
                          f"{json.dumps(listing, ensure_ascii=False, indent=1)}\n</candidates>",
-                         discover.parse_screen, 6000, label="Screening") if listing else {}
+                         discover.parse_screen, 8000, label="Screening") if listing else {}
     for n, case in enumerate(candidates, 1):
-        verdict = screened.get(f"C{n}") or {"relevant": False, "domains": [], "case_type": None,
+        verdict = screened.get(f"C{n}") or {"relevant": False, "unclear": True, "domains": [], "case_type": None,
                                             "reason": "Not assessed by the screening step."}
         case["screen"] = verdict
     relevant = [c for c in candidates if c["screen"]["relevant"]]
-    kept = discover.diverse(relevant, keep)
+    kept = discover.diverse([c for c in relevant if c["has_pdf"]], keep)
+    wanted = [c for c in relevant if not c["has_pdf"]]
     step(log, "screen", "Screening", model, before,
-         f"{len(relevant)} of {len(candidates)} candidates look relevant, {len(kept)} kept for full reading",
-         total_hint=len(kept))
+         f"{len(relevant)} of {len(candidates)} candidates look relevant, {len(kept)} kept for full reading"
+         + (f", {len(wanted)} without a complaint PDF worth getting" if wanted else ""), total_hint=len(kept))
     for case in candidates:
         case["kept"] = case in kept
     record = {"searches": searches, "days": search.days, "since": search.since().isoformat(), "skipped": skipped,
               "candidates": [{k: c.get(k) for k in ("name", "court", "filed", "url", "found_by", "screen", "kept",
-                                                    "download_error", "docket_number")} for c in found]}
+                                                    "download_error", "docket_number", "has_pdf", "page_count",
+                                                    "pacer_doc_id", "cost", "description")} for c in found],
+              "cost": round(sum(c["cost"] for c in wanted), 2)}
     cases = [{k: c[k] for k in ("name", "court", "filed", "url", "document_label", "document_url", "pdf", "docket_number",
                                 "found_by")} for c in kept]
     return cases, record
