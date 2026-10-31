@@ -6,9 +6,21 @@
 {% if config_error %}<div class="card error">LLM settings: {{ config_error }}. Start the server with <code>python -m src.web --dotenv</code>.</div>{% endif %}
 {% if error %}<div class="card error">{{ error }}</div>{% endif %}
 
+<h2>New cases today</h2>
+<form class="card" method="post" action="{{ url_for('daily') }}">
+  <div class="muted">Search only complaints filed recently, for a saved CV. Cases earlier daily checks showed are skipped. Results are listed by day on <a href="{{ url_for('today') }}">New cases by day</a>.</div>
+  {% if has_token and samples %}
+  <label>Saved CV <select name="sample">{% for s in samples %}<option>{{ s }}</option>{% endfor %}</select></label>
+  <label>Filed in the last <select name="days">{% for d in windows %}<option value="{{ d }}">{{ d }} day{{ "s" if d != 1 }}</option>{% endfor %}</select></label>
+  <div class="muted">About 3 CourtListener requests ({{ used }} of {{ cap }} used by local runs in the last 24 hours).</div>
+  <p><button type="submit" {% if busy or config_error %}disabled{% endif %}>Check new cases</button></p>
+  {% else %}<div class="muted">Needs COURTLISTENER_TOKEN and at least one saved CV.</div>{% endif %}
+</form>
+
 <h2>1. Expert CV</h2>
 <form class="card" method="post" action="{{ url_for('start') }}" enctype="multipart/form-data">
   <label>Upload a CV (PDF, up to 10 MB)<br><input type="file" name="cv" accept="application/pdf,.pdf"></label>
+  <label><input type="checkbox" name="keep" checked> Save this CV for daily checks</label>
   {% if samples %}
   <div class="or">or use a sample CV</div>
   {% for s in samples %}<label><input type="radio" name="sample" value="{{ s }}"> {{ s }}</label>{% endfor %}

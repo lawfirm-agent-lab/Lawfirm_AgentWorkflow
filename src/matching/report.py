@@ -159,8 +159,10 @@ def discovery_block(discovery):
                        f"</span></li>" for c in values)
     later = [c for c in relevant if not c.get("kept")]
     rejected = [c for c in candidates if not (c.get("screen") or {}).get("relevant")]
+    window = (f"filed since {e(discovery['since'])}" if discovery.get("since") else f"filed in the last {discovery['days']} days")
+    seen = f" ({discovery['skipped']} shown in earlier checks left out)" if discovery.get("skipped") else ""
     return (f"<details class='expert'><summary><b>How these cases were found</b>: {len(discovery['searches'])} searches of "
-            f"complaints filed in the last {discovery['days']} days → {len(screened)} candidates screened → {len(relevant)} relevant "
+            f"complaints {window}{seen} → {len(screened)} candidates screened → {len(relevant)} relevant "
             f"→ {len(kept)} read in full</summary>"
             f"<table><thead><tr><th>Search (written from the CV)</th><th>CourtListener query terms</th><th>Complaints</th></tr></thead>"
             f"<tbody>{searches}</tbody></table>"

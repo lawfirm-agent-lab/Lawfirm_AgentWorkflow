@@ -173,13 +173,15 @@ def expert_view(expert, items=True):
     return json.dumps(view, ensure_ascii=False, indent=1)
 
 
-def find_cases(model, search, expert, keep, pdf_dir, log, per_search=8):
-    """Search, download and screen. Returns (cases to profile, discovery record for the report)."""
+def find_cases(model, search, expert, keep, pdf_dir, log, per_search=8, skip=()):
+    """Search, download and screen. Returns (cases to profile, discovery record for the report).
+
+    skip: docket URLs already shown to this expert (earlier daily checks); they are not taken again."""
     before = model.stats["cached"]
     searches = model.ask("case_search_v1", f"<expert>\n{expert_view(expert)}\n</expert>", discover.parse_searches, 1000,
                          label="Search terms")
     step(log, "plan", "Search terms", model, before, "; ".join(s["label"] for s in searches))
-    found, seen = [], set()
+    found, seen, skipped = [], set(), 0
     for s in searches:
         try:
             rows, cached = search.search(s["terms"])
@@ -188,15 +190,17 @@ def find_cases(model, search, expert, keep, pdf_dir, log, per_search=8):
             s.update(results=0, taken=0, error=str(exc))
             log({"stage": "search", "label": s["label"], "detail": f"not run: {exc}", "cached": False})
             continue
-        fresh = [r for r in rows if r["docket_id"] not in seen][:per_search]
-        seen.update(r["docket_id"] for r in fresh)
+        known = [r for r in rows if r["url"] in skip and r["docket_id"] not in seen]
+        skipped += len(known)
+        fresh = [r for r in rows if r["docket_id"] not in seen and r["url"] not in skip][:per_search]
+        seen.update(r["docket_id"] for r in fresh + known)
         found += [{**r, "found_by": s["label"]} for r in fresh]
         s.update(results=len(rows), taken=len(fresh))
         model.record("courtlistener_search", s["label"], query=discover.query(s["terms"]), cached=cached,
                      results=[{k: r.get(k) for k in ("name", "court", "filed", "url", "description")} for r in rows],
                      taken=[r["url"] for r in fresh])
-        log({"stage": "search", "label": s["label"], "detail": f"{len(rows)} complaints found, {len(fresh)} new taken",
-             "cached": cached})
+        log({"stage": "search", "label": s["label"], "detail": f"{len(rows)} complaints found, {len(fresh)} new taken"
+             + (f", {len(known)} seen before" if known else ""), "cached": cached})
     candidates = []
     for case in found:
         try:
@@ -224,7 +228,7 @@ def find_cases(model, search, expert, keep, pdf_dir, log, per_search=8):
          total_hint=len(kept))
     for case in candidates:
         case["kept"] = case in kept
-    record = {"searches": searches, "days": search.days,
+    record = {"searches": searches, "days": search.days, "since": search.since().isoformat(), "skipped": skipped,
               "candidates": [{k: c.get(k) for k in ("name", "court", "filed", "url", "found_by", "screen", "kept",
                                                     "download_error", "docket_number")} for c in found]}
     cases = [{k: c[k] for k in ("name", "court", "filed", "url", "document_label", "document_url", "pdf", "docket_number",
@@ -251,10 +255,11 @@ def load_case(model, case, base, limit, log):
     return case, profile
 
 
-def run(model, cv_paths, cases, base, limit, log=print, search=None, keep=6, pdf_dir=None, cv_name=None):
+def run(model, cv_paths, cases, base, limit, log=print, search=None, keep=6, pdf_dir=None, cv_name=None, skip=()):
     """log receives one dict per finished step: stage, label, detail, cached (and total_hint after screening).
 
-    With a search (CourtListenerSearch), new cases are found for each expert and added to `cases`."""
+    With a search (CourtListenerSearch), new cases are found for each expert and added to `cases`;
+    docket URLs in skip are left out of the search results."""
     experts = []
     for path in cv_paths:
         before = model.stats["cached"]
@@ -263,7 +268,7 @@ def run(model, cv_paths, cases, base, limit, log=print, search=None, keep=6, pdf
              f"{len(expert['items'])} experience items verified, {len(expert['dropped'])} dropped")
         pool, discovery = list(cases), None
         if search:
-            found, discovery = find_cases(model, search, expert, keep, pdf_dir, log)
+            found, discovery = find_cases(model, search, expert, keep, pdf_dir, log, skip=skip)
             known = {c.get("url") for c in pool}
             pool += [c for c in found if c["url"] not in known]
         results = []

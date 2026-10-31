@@ -49,7 +49,24 @@ Every experience item, issue, expertise area and counsel entry must quote its so
 # Command line
 .venv/bin/python -m src.matching.run --dotenv --cv data/matching/cvs/Mark_C_Nicely.ExpertWitness.pdf \
     --cases eval/matching_cases.json --find-cases
+
+# Daily check for every saved CV (or --cv NAME), same runs as the web app's "Check new cases"
+.venv/bin/python -m src.web.daily --dotenv --days 1
 ```
+
+### Daily checks
+
+The goal is to see, each day, the new cases relevant to an expert. A daily check is a normal run with three differences:
+
+- It only searches complaints filed in the last N days (1, 3 or 7; `filed_after` = today − N).
+- Cases that earlier daily checks of the same CV already found are left out of the search results, so each case is shown once.
+- The fixed case pool is not included.
+
+Uploaded CVs can be saved to `data/matching/cvs/` ("Save this CV for daily checks"); daily checks run for saved CVs. The **New cases by day** page (`/today`) lists the checks by the day they ran: complaints found, screened out, and the cases read and matched with their tier and score. "Filed" is the court filing date; "Checked" is when the system found the case.
+
+Daily checks are started by hand (web button or the command above). Running them on a schedule in the cloud is the next step.
+
+First real check (2026-10-30, Mark C. Nicely, filed since 2026-10-29): 3 searches → 4 complaints with a PDF → none relevant (two generic e-commerce patent suits, a genetic-testing patent case, a county ordinance case). A one-day window returns few complaints because the search only finds complaints whose PDF is already on CourtListener; most new complaints have none yet. Handling cases without a PDF is the next piece of work.
 
 - Sample CVs: put PDFs in `data/matching/cvs/` (the two public CVs used so far are there locally).
 - Fixed case pool: [eval/matching_cases.json](../eval/matching_cases.json) (saved CourtListener entries or a local PDF per case).

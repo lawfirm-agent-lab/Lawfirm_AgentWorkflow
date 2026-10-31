@@ -3,7 +3,7 @@
 {% block body %}
 <nav><a href="{{ url_for('index') }}">← Home</a></nav>
 <h1>Matching run</h1>
-<div class="muted">CV: {{ status.cv }} · {{ status.cases }} fixed cases{% if status.find %} + cases found on CourtListener{% endif %} · run {{ run_id }}</div>
+<div class="muted">CV: {{ status.cv }} · {% if status.daily %}daily check, complaints filed in the last {{ status.days }} day{{ "s" if status.days != 1 }}{% else %}{{ status.cases }} fixed cases{% if status.find %} + cases found on CourtListener{% endif %}{% endif %} · run {{ run_id }}</div>
 
 <div class="bar"><div id="bar" style="width:0"></div></div>
 <div id="state" class="run">Starting…</div>

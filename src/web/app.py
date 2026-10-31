@@ -4,8 +4,10 @@ Runs on 127.0.0.1 only. The LLM key stays in the server's environment and never 
 """
 import json
 import re
+import shutil
 import tempfile
 import time
+from datetime import datetime
 from pathlib import Path
 
 from flask import Flask, Response, abort, jsonify, redirect, render_template, request, url_for
@@ -13,12 +15,15 @@ from markupsafe import Markup, escape
 
 from src.core.config import ConfigError
 from src.llm.config import LLMSettings
+from src.matching.match import LABELS
 from src.matching.report import render
 from src.matching.run import LOCAL_LIMITS, ROOT, case_status
 from src.store.pipeline import PipelineStore
 from src.web.jobs import RUN_ID, Jobs
 
 MAX_UPLOAD = 10 * 1024 * 1024
+WINDOWS = (1, 3, 7)  # Daily check: complaints filed in the last N days.
+SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]+")
 STEPS = (("resume", "1. Resume text"), ("cv", "2. CV extraction"), ("search", "3. Case search"),
          ("screen", "4. Screening"), ("cases", "5. Case profiles"), ("match", "6. Matching"))
 PROMPT_OF = {"cv": "expert_cv_v1", "search": "case_search_v1", "screen": "case_screen_v1",
@@ -41,6 +46,27 @@ def inspection(step, trace, expert):
     for call in calls:
         call["result"] = by_name.get(call["label"])
     return calls
+
+
+def daily_view(jobs):
+    """Finished daily checks grouped by the local date they ran, newest first, with every case
+    they read (and how many were screened out) per CV."""
+    days = {}
+    for r in jobs.daily_runs():
+        ran = datetime.fromisoformat(r["started"]).astimezone()
+        for expert in jobs.result(r["id"]) or []:
+            discovery = expert.get("discovery") or {}
+            candidates = discovery.get("candidates") or []
+            days.setdefault(f"{ran:%Y-%m-%d}", []).append({
+                "run": r["id"], "cv": r["cv"], "name": expert["profile"]["name"], "time": f"{ran:%H:%M}",
+                "since": discovery.get("since"), "skipped": discovery.get("skipped", 0), "found": len(candidates),
+                "screened_out": sum(1 for c in candidates if not (c.get("screen") or {}).get("relevant")),
+                "cases": [{"name": x["case"]["name"], "url": x["case"].get("url"), "court": x["case"].get("court"),
+                           "filed": x["case"].get("filed"), "tier": x["match"]["tier"],
+                           "label": LABELS[x["match"]["tier"]], "score": x["score"]["total"],
+                           "summary": x["match"].get("summary") or x["match"].get("reason") or ""}
+                          for x in expert["results"]]})
+    return sorted(days.items(), reverse=True)
 
 
 def create_app(env, data_dir=ROOT / "data" / "matching", cases_file=ROOT / "eval" / "matching_cases.json",
@@ -83,7 +109,7 @@ def create_app(env, data_dir=ROOT / "data" / "matching", cases_file=ROOT / "eval
         return render_template("index.html", samples=samples(), cases=pool, history=jobs.history(),
                                busy=jobs.busy(), config_error=config_error, error=request.args.get("error"),
                                model=settings and settings.model, has_token=has_token, used=requests_today(),
-                               cap=LOCAL_LIMITS.per_day, keep=jobs.keep)
+                               cap=LOCAL_LIMITS.per_day, keep=jobs.keep, windows=WINDOWS)
 
     @app.post("/runs")
     def start():
@@ -96,7 +122,10 @@ def create_app(env, data_dir=ROOT / "data" / "matching", cases_file=ROOT / "eval
                 upload.save(path)
                 if path.read_bytes()[:1024].find(b"%PDF-") < 0:
                     return redirect(url_for("index", error="The uploaded file is not a PDF."))
-                name = Path(upload.filename).name
+                name = SAFE_NAME.sub("_", Path(upload.filename).stem).strip("._")[:80] or "cv"
+                name += ".pdf"
+                if request.form.get("keep") == "on":  # Saved CVs are the ones daily checks can run for.
+                    shutil.copyfile(path, samples_dir / name)
             elif sample in samples():
                 path, name = samples_dir / sample, sample
             else:
@@ -105,6 +134,22 @@ def create_app(env, data_dir=ROOT / "data" / "matching", cases_file=ROOT / "eval
         if run_id is None:
             return redirect(url_for("index", error="Another run is in progress; wait for it to finish."))
         return redirect(url_for("progress", run_id=run_id))
+
+    @app.post("/daily")
+    def daily():
+        if config_error or not has_token:
+            return redirect(url_for("index", error="Daily checks need LLM settings and COURTLISTENER_TOKEN."))
+        sample, days = request.form.get("sample", ""), request.form.get("days", type=int)
+        if sample not in samples() or days not in WINDOWS:
+            return redirect(url_for("index", error="Choose a saved CV and a time window for the daily check."))
+        run_id = jobs.start(samples_dir / sample, sample, days=days)
+        if run_id is None:
+            return redirect(url_for("index", error="Another run is in progress; wait for it to finish."))
+        return redirect(url_for("progress", run_id=run_id))
+
+    @app.get("/today")
+    def today():
+        return render_template("today.html", days=daily_view(jobs), busy=jobs.busy())
 
     @app.get("/runs/<run_id>")
     def progress(run_id):
@@ -130,7 +175,8 @@ def create_app(env, data_dir=ROOT / "data" / "matching", cases_file=ROOT / "eval
         links = [("result", "Results", url_for("result", run_id=run_id))]
         links += [(key, title, url_for("inspect", run_id=run_id, step=key)) for key, title in STEPS]
         items = "".join(f"<a class='tab{' on' if key == active else ''}' href='{href}'>{title}</a>" for key, title, href in links)
-        return Markup(f"<nav><a href='{url_for('index')}'>← New run</a><a href='{url_for('result_json', run_id=run_id)}'>"
+        return Markup(f"<nav><a href='{url_for('index')}'>← New run</a><a href='{url_for('today')}'>New cases by day</a>"
+                      f"<a href='{url_for('result_json', run_id=run_id)}'>"
                       f"Download JSON</a><span class='muted'>CV: {escape(status['cv'])} · run {run_id}</span></nav>"
                       f"<nav class='tabs'>{items}</nav>")
 

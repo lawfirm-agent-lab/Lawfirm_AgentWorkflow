@@ -107,10 +107,14 @@ class CourtListenerSearch:
         self.session, self.budget, self.cache_dir, self.days, self.today = session, budget, cache_dir, days, today
         cache_dir.mkdir(parents=True, exist_ok=True)
 
+    def since(self):
+        """First filing date searched (inclusive)."""
+        return self.today() - timedelta(days=self.days)
+
     def search(self, terms):
         """Returns (cases, cached). One API request unless the same search ran today."""
         params = {"type": "rd", "q": query(terms), "order_by": "score desc", "available_only": "on",
-                  "filed_after": (self.today() - timedelta(days=self.days)).isoformat()}
+                  "filed_after": self.since().isoformat()}
         key = hashlib.sha256(json.dumps([params, self.today().isoformat()]).encode()).hexdigest()
         path = self.cache_dir / f"search-{key}.json"
         if path.exists():
