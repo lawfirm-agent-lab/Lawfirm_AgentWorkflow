@@ -63,6 +63,8 @@ Add these in **Settings → Secrets and variables → Actions**. Never commit re
 | `ANALYZER` | Variable (optional) | Overrides `pipeline.analyzer` in `config.yaml`. |
 | `LLM_PROVIDER`, `LLM_BASE_URL`, `LLM_MODEL` / `LLM_API_KEY` | Variables / Secret | Milestone 2. See [LLM providers](#llm-providers). |
 
+The expert–case matching job (`daily-matching.yml`, daily) uses `DATABASE_URL`, `COURTLISTENER_TOKEN` and the `LLM_*` settings above. See [docs/MATCHING.md](docs/MATCHING.md#daily-checks-in-the-cloud).
+
 ### 2. Recipients and subscriptions
 
 Recipient addresses live only in the database and never in the repository or in logs. Manage them from your machine with `DATABASE_URL` in your local `.env`:

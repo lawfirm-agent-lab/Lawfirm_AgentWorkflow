@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import tempfile
 
@@ -17,7 +18,24 @@ class ExtractionError(RuntimeError):
     """The document could not be completely processed."""
 
 
+# Homebrew's bin directories, for shells (e.g. some editor terminals) whose PATH lacks them.
+TOOL_DIRS = ("/opt/homebrew/bin", "/usr/local/bin")
+
+
+def tool(name):
+    """Full path of a Poppler/Tesseract executable: PATH first, then the Homebrew directories."""
+    found = shutil.which(name)
+    if found:
+        return found
+    for directory in TOOL_DIRS:
+        path = Path(directory) / name
+        if path.is_file() and os.access(path, os.X_OK):
+            return str(path)
+    return name
+
+
 def _run(args, timeout):
+    args = [tool(args[0]), *args[1:]]
     try:
         return subprocess.run(args, check=True, capture_output=True, text=True,
                               encoding="utf-8", errors="replace", timeout=timeout,
@@ -32,8 +50,11 @@ def _run(args, timeout):
 
 def extract_pdf(path, *, language="eng", force_ocr=False, min_text_chars=40,
                 max_pages=200, max_bytes=50 * 1024 * 1024, timeout=120,
-                source_url=None, layout=True):
+                source_url=None, layout=True, first_pages=None):
     """Return page-numbered text; never modify the input or contact a service.
+
+    first_pages: read only the first N pages of a longer document instead of rejecting it
+    (a complaint filed with its exhibits can run to hundreds of pages); total_pages says how many there are.
 
     Sparse text pages use OCR. Force OCR for mixed image/text pages or a bad
     existing text layer. Blank OCR results are explicitly flagged for review.
@@ -58,11 +79,13 @@ def extract_pdf(path, *, language="eng", force_ocr=False, min_text_chars=40,
         digest = hasher.hexdigest()
     info = _run(["pdfinfo", str(path)], timeout)
     match = re.search(r"^Pages:\s+(\d+)\s*$", info, re.M)
-    if not match or not 1 <= int(match[1]) <= max_pages:
+    total = int(match[1]) if match else 0
+    if total < 1 or (total > max_pages and not first_pages):
         raise ExtractionError("Invalid page count or document exceeds the page limit")
+    count = min(total, first_pages) if first_pages else total
     pages = []
     with tempfile.TemporaryDirectory(prefix="docket-ocr-") as directory:
-        for number in range(1, int(match[1]) + 1):
+        for number in range(1, count + 1):
             text = "" if force_ocr else _run(
                 ["pdftotext", "-f", str(number), "-l", str(number), *(["-layout"] if layout else []),
                  "-enc", "UTF-8", str(path), "-"], timeout).strip("\x0c\n\r ")
@@ -85,7 +108,7 @@ def extract_pdf(path, *, language="eng", force_ocr=False, min_text_chars=40,
                 warnings.append("No text detected; page may be blank or require manual review.")
             pages.append({"page": number, "method": method, "text": text, "warnings": warnings})
     return {"schema_version": 1, "source_file": str(path), "source_url": source_url,
-            "sha256": digest, "page_count": len(pages), "language": language,
+            "sha256": digest, "page_count": len(pages), "total_pages": total, "language": language,
             "pages": pages}
 
 

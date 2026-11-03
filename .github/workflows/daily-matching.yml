@@ -1,0 +1,51 @@
+name: Daily new cases for saved CVs
+
+on:
+  schedule:
+    # 11:30 UTC is early morning in the US. GitHub may delay or skip scheduled runs under load;
+    # the 2-day window covers a skipped day, and cases shown before are left out.
+    - cron: "30 11 * * *"
+  workflow_dispatch:
+    inputs:
+      days:
+        description: Complaints filed in the last N days
+        type: choice
+        options: ["1", "2", "3", "7"]
+        default: "2"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: daily-matching
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: Find, screen and match new complaints
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install PDF tools
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends poppler-utils tesseract-ocr
+      - name: Install Python dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Run the daily check for every CV saved in the cloud
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          COURTLISTENER_TOKEN: ${{ secrets.COURTLISTENER_TOKEN }}
+          LLM_PROVIDER: ${{ vars.LLM_PROVIDER }}
+          LLM_BASE_URL: ${{ vars.LLM_BASE_URL }}
+          LLM_MODEL: ${{ vars.LLM_MODEL }}
+          LLM_EXTRA_BODY: ${{ vars.LLM_EXTRA_BODY }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          DAYS: ${{ inputs.days || '2' }}
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: python -m src.web.daily --cloud --days "$DAYS"

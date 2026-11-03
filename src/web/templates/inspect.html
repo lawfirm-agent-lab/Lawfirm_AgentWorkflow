@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% block title %}{{ title }}{% endblock %}
+{% macro io(call, input_label="Input sent to the model") %}
+  <div class="muted">Prompt <code>{{ call.step }}</code> · {% if call.cached %}answer from cache{% else %}new call{% if call.tokens %}, {{ call.tokens[0] }} tokens in, {{ call.tokens[1] }} out{% endif %}{% endif %}</div>
+  <details><summary>{{ input_label }} ({{ call.input|length }} characters)</summary><pre class="io">{{ call.input }}</pre></details>
+  <details><summary>Raw model output (JSON)</summary><pre class="io">{{ call.pretty }}</pre></details>
+{% endmacro %}
+{% block body %}
+{{ tabs }}
+<h1>{{ title }}</h1>
+{% if not trace %}
+<div class="card error">This run has no step record (it ran before step recording was added). Start a new run with the same CV: cached answers make it take seconds and use no CourtListener requests.</div>
+{% elif step == "resume" %}
+  <div class="muted">What the system read from the uploaded PDF, before any model sees it. "text" = the PDF's own text layer; "ocr" = image recognition (check it closely); bullet symbols are removed.</div>
+  {% for t in trace if t.step == "extract_cv" %}
+    <h2>{{ t.label }} · {{ t.pages|length }} page{{ "s" if t.pages|length != 1 }}</h2>
+    {% for p in t.pages %}
+      <div class="card"><b>Page {{ p.page }}</b> · method <span class="{{ 'warn' if p.method != 'text' else 'ok' }}">{{ p.method }}</span> · {{ p.text|length }} characters
+        {% for w in p.warnings %}<div class="warn">{{ w }}</div>{% endfor %}
+        <pre class="io">{{ p.text }}</pre></div>
+    {% endfor %}
+  {% endfor %}
+{% elif step == "cv" %}
+  <div class="muted">The page text goes to the model, which lists experience items, each with a quote. Code keeps an item only when its quote is found in the CV text. Check: is each summary faithful to its quote, and is anything important missing?</div>
+  {% for call in calls %}{{ io(call) }}{% endfor %}
+  {% if expert %}{% set p = expert.profile %}
+  <h2>Kept after checking: {{ p['items']|length }} items · dropped {{ p.dropped|length }}</h2>
+  <div class="card"><b>{{ p.name }}</b> — {{ p.headline }}<div class="muted">Domains: {{ p.domains|join(", ") }}</div></div>
+  <div class="wrap"><table><thead><tr><th>ID</th><th>Kind</th><th>Summary (model's words)</th><th>Quote (checked in CV)</th><th>Page</th></tr></thead><tbody>
+  {% for i in p['items'] %}<tr><td>{{ i.id }}</td><td>{{ i.kind }}</td><td>{{ i.summary }}</td><td class="quote">{{ i.quote }}</td><td>{{ i.page }}</td></tr>{% endfor %}
+  </tbody></table></div>
+  {% if p.dropped %}<h3>Dropped (quote not found)</h3><ul>{% for d in p.dropped %}<li>p. {{ d.page }} — {{ d.reason }}: <span class="quote">{{ d.quote }}</span></li>{% endfor %}</ul>{% endif %}
+  {% endif %}
+{% elif step == "search" %}
+  <div class="muted">The expert profile goes to the model, which writes keyword searches. Each search is sent to CourtListener (main complaints filed in the search window, with or without a PDF). Up to 8 results per search that earlier searches or daily checks did not already find are picked for screening. Check: do the searches fit the CV, and are the results the kind of case intended?</div>
+  {% for call in calls %}{{ io(call, "Expert profile sent to the model") }}{% endfor %}
+  {% for t in trace if t.step == "courtlistener_search" %}
+    <h2>{{ t.label }} · {{ t.results|length }} results{% if t.cached %} <span class="muted">(cached)</span>{% endif %}</h2>
+    <div class="muted">Query: <code>{{ t.query }}</code></div>
+    <div class="wrap"><table><thead><tr><th>Case</th><th>Court</th><th>Filed</th><th>PDF</th><th>Picked for screening</th><th>Docket entry</th></tr></thead><tbody>
+    {% for r in t.results %}<tr><td><a href="{{ r.url }}">{{ r.name }}</a></td><td>{{ r.court }}</td><td>{{ r.filed }}</td>
+      <td>{{ "no" if r.has_pdf == false else "yes" }}</td><td>{{ "yes" if r.url in t.taken else "—" }}</td><td class="muted small">{{ r.description[:220] }}</td></tr>{% endfor %}
+    </tbody></table></div>
+  {% else %}<div class="muted">Case search was not used in this run.</div>{% endfor %}
+{% elif step == "screen" %}
+  <div class="muted">Every candidate goes to the model in one call: the first pages of the complaint when CourtListener has the PDF, otherwise only the case name and docket text. It marks each relevant, not relevant or unclear, with a reason. Up to 6 relevant ones with a PDF (at most 3 of one case type first) are read in full; relevant ones without a PDF are listed as worth getting. Check: are rejections and acceptances right?</div>
+  {% for call in calls %}{{ io(call, "Candidates sent to the model") }}{% endfor %}
+  {% if expert and expert.discovery %}
+  <div class="wrap"><table><thead><tr><th>Case</th><th>PDF</th><th>Verdict</th><th>Read in full</th><th>Type</th><th>Reason (model)</th></tr></thead><tbody>
+  {% for c in expert.discovery.candidates %}<tr><td><a href="{{ c.url }}">{{ c.name }}</a><div class="muted">{{ c.court }} · {{ c.filed }} · via {{ c.found_by }}</div></td>
+    <td>{% if c.has_pdf == false %}no · PACER ≤ ${{ "%.2f"|format(c.cost or 3) }}{% else %}yes{% endif %}</td>
+    <td>{% if c.screen %}{% if c.screen.relevant %}<span class="ok">relevant</span>{% elif c.screen.unclear %}<span class="run">unclear</span>{% else %}<span class="warn">not relevant</span>{% endif %}{% else %}<span class="warn">{{ c.download_error or "not screened" }}</span>{% endif %}</td>
+    <td>{{ "yes" if c.kept else "—" }}</td><td>{{ (c.screen or {}).case_type or "" }}</td><td>{{ (c.screen or {}).reason or "" }}</td></tr>{% endfor %}
+  </tbody></table></div>
+  {% else %}<div class="muted">Case search was not used in this run.</div>{% endif %}
+{% elif step == "cases" %}
+  <div class="muted">Each complaint's text (page-marked) goes to the model, which writes a plain-English profile. Code keeps an issue, expertise area or lawyer only when its quote is on the cited page. Check: is the summary right, are the technical issues the real ones, is "stated" used only where the document says so?</div>
+  {% for call in calls %}{% set r = call.result %}
+    <h2>{{ call.label }}</h2>
+    {{ io(call, "Case document sent to the model") }}
+    {% if r and r.profile %}{% set p = r.profile %}
+    <div class="card"><b>{{ p.case_type }}</b> · {{ p.domains|join(", ") }} · {{ p.pages_read }} of {{ p.pages }} pages read
+      <p>{{ p.summary }}</p><div class="muted">Technology: {{ p.technology|join(", ") }}</div></div>
+    <div class="wrap"><table><thead><tr><th>ID</th><th>Issue / expertise (model)</th><th>Quote (checked)</th><th>Page</th></tr></thead><tbody>
+    {% for i in p.issues %}<tr><td>{{ i.id }}</td><td>{{ i.issue }}{% if not i.technical %} <span class="muted">(not technical)</span>{% endif %}</td><td class="quote">{{ i.quote }}</td><td>{{ i.page }}</td></tr>{% endfor %}
+    {% for x in p.expertise %}<tr><td>{{ x.id }}</td><td>{{ x.area }} — <b class="{{ 'ok' if x.basis == 'stated' else 'run' }}">{{ x.basis }}</b>: {{ x.why }}</td><td class="quote">{{ x.quote }}</td><td>{{ x.page }}</td></tr>{% endfor %}
+    </tbody></table></div>
+    <div class="muted">Counsel: {% for c in p.counsel %}{{ c.name }} ({{ c.firm or "" }}, for {{ c.party or "?" }}){{ "; " if not loop.last }}{% endfor %}</div>
+    {% if p.dropped %}<h3>Dropped</h3><ul>{% for d in p.dropped %}<li>{{ d.field }}, p. {{ d.page }} — {{ d.reason }}: <span class="quote">{{ d.quote }}</span></li>{% endfor %}</ul>{% endif %}
+    {% endif %}
+  {% endfor %}
+{% elif step == "match" %}
+  <div class="muted">The expert's items (E ids) and the case profile (I and X ids) go to the model, which proposes a tier, reasons and an email. Code drops reasons citing unknown or non-technical points and lowers a tier the evidence does not support. Check: does each reason really connect the experience to the issue?</div>
+  {% for call in calls %}{% set r = call.result %}
+    <h2>{{ call.label }}</h2>
+    {{ io(call, "Expert and case profiles sent to the model") }}
+    {% if r %}{% set m = r.match %}
+    <div class="card">Model's tier: <b>{{ m.model_tier or m.tier }}</b> → final tier: <b>{{ m.tier }}</b>{% if r.score %} · score {{ r.score.total }}{% endif %}
+      {% for n in m.notes %}<div class="warn">{{ n }}</div>{% endfor %}<p>{{ m.summary }}</p></div>
+    <div class="wrap"><table><thead><tr><th>Strength</th><th>CV item (quote)</th><th>Case point (quote)</th><th>Reason (model)</th></tr></thead><tbody>
+    {% for x in m.matches %}<tr><td>{{ x.strength }}</td><td>{{ x.expert_item }} · {{ x.expert.summary }}<div class="quote">{{ x.expert.quote }}</div></td>
+      <td>{{ x.case_point }} · {{ x.point.issue or x.point.area }}<div class="quote">{{ x.point.quote }}</div></td><td>{{ x.reason }}</td></tr>{% endfor %}
+    </tbody></table></div>
+    {% if m.gaps %}<div class="muted">Gaps: {{ m.gaps|join(" · ") }}</div>{% endif %}
+    {% if m.email %}<details><summary>Email draft</summary><pre class="io">{{ m.email.subject }}
+
+{{ m.email.body }}</pre></details>{% endif %}
+    {% endif %}
+  {% endfor %}
+{% endif %}
+{% endblock %}

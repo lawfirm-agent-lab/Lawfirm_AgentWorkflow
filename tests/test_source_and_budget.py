@@ -130,6 +130,18 @@ class BudgetTests(BudgetBase):
         self.assertFalse(self.budget().acquire())
         self.assertEqual(self.slept, [])
 
+    def test_wake_up_just_short_of_the_interval_still_acquires(self):
+        budget = self.budget()
+        self.assertTrue(budget.acquire())
+        budget.sleep = lambda seconds: setattr(self, "t", self.t + seconds - 0.001)  # wall-clock jitter
+        self.assertTrue(budget.acquire())
+        # A reservation by another run moments ago is still refused.
+        with self.store.transaction():
+            self.store.execute("INSERT INTO api_requests VALUES ('y','courtlistener',?)", (self.t + 20,))
+        self.t += 22
+        budget.sleep = lambda seconds: None
+        self.assertFalse(budget.acquire())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -3,7 +3,7 @@ from pathlib import Path
 import subprocess
 import unittest
 from unittest.mock import patch
-from src.ingest.pdf import ExtractionError, extract_pdf, _run, main
+from src.ingest.pdf import ExtractionError, extract_pdf, _run, main, tool
 
 
 class PdfTests(unittest.TestCase):
@@ -39,6 +39,14 @@ class PdfTests(unittest.TestCase):
         self.assertEqual(page['text'], 'Exhibit A')
         self.assertEqual(page['method'], 'text_fallback')
         self.assertTrue(page['warnings'])
+
+    @patch("src.ingest.pdf._run")
+    def test_first_pages_of_a_long_document(self, run):
+        long_text = "This complaint page has plenty of text on it for extraction."
+        run.side_effect = ["Pages: 230\n", long_text, long_text]
+        result = extract_pdf(self.path, first_pages=2)
+        self.assertEqual((result['page_count'], result['total_pages']), (2, 230))
+        self.assertEqual(run.call_count, 3)
 
     @patch("src.ingest.pdf._run", return_value="Pages: 201\n")
     def test_page_limit(self, run):
@@ -76,3 +84,14 @@ class PdfTests(unittest.TestCase):
         self.assertEqual(len(results), 1)
         self.assertTrue((results[0] / 'document.json').exists())
         self.assertIn('Page 1', (results[0] / 'document.txt').read_text())
+
+    def test_tools_found_outside_path(self):
+        # Some editor terminals start without Homebrew on PATH; the tools must still be found.
+        with tempfile.TemporaryDirectory() as directory:
+            executable = Path(directory) / 'pdfinfo'
+            executable.write_text('#!/bin/sh\n')
+            executable.chmod(0o755)
+            with patch('src.ingest.pdf.shutil.which', return_value=None), \
+                    patch('src.ingest.pdf.TOOL_DIRS', (directory,)):
+                self.assertEqual(tool('pdfinfo'), str(executable))
+                self.assertEqual(tool('missing-tool'), 'missing-tool')
