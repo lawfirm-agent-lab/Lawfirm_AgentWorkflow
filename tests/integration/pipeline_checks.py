@@ -140,6 +140,21 @@ class PostgreSQLSiteFunctionTests(unittest.TestCase):
             self.call('SELECT matching_submit(?, ?, ?, ?)', self.key, 'cv.pdf', pdf, False)
         self.assertEqual(self.cloud.cvs(), [])  # save=false: the CV is kept only with the request.
 
+    def test_site_lists_stops_and_deletes_saved_cvs(self):
+        from src.store.db import StoreError
+        self.cloud.save_cv('jane.pdf', b'%PDF-1.4')
+        listed = self.call('SELECT matching_cvs(?)', self.key)
+        self.assertEqual([(c['name'], c['active'], c['runs']) for c in listed], [('jane.pdf', True, 1)])
+        self.call('SELECT matching_cv_active(?, ?, ?)', self.key, 'jane.pdf', False)
+        self.assertEqual(self.cloud.cvs(), [])
+        with self.assertRaises(StoreError):
+            self.call('SELECT matching_cv_delete(?, ?)', 'wrong', 'jane.pdf')
+        done = self.call('SELECT matching_cv_delete(?, ?)', self.key, 'jane.pdf')
+        self.assertEqual((done['cvs'], done['runs']), (1, 1))
+        self.assertEqual(self.call('SELECT matching_feed(?, ?)', self.key, 14), [])
+        with self.assertRaises(StoreError):
+            self.call('SELECT matching_cv_delete(?, ?)', self.key, 'jane.pdf')
+
 
 if __name__ == '__main__':
     suite = unittest.TestSuite()

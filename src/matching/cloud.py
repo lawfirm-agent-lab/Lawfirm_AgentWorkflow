@@ -8,6 +8,8 @@ day" page, and saves CVs uploaded with "save this CV" to the cloud too.
 
 python -m src.matching.cloud --dotenv upload data/matching/cvs/Jane_Doe.pdf   save a CV for daily checks
 python -m src.matching.cloud --dotenv list                                    saved CVs and recent checks
+python -m src.matching.cloud --dotenv stop-cv | resume-cv NAME.pdf            stop or resume a CV's daily checks
+python -m src.matching.cloud --dotenv delete-cv NAME.pdf                      delete a CV and every result from it
 python -m src.matching.cloud --dotenv pull                                    copy cloud checks to this computer
 python -m src.matching.cloud --dotenv new-key --label advisor                 make a link to the results website
 python -m src.matching.cloud --dotenv keys | revoke-key advisor               list or turn off website links
@@ -80,6 +82,25 @@ class CloudRuns:
         with self.session() as store:
             rows = store.execute("SELECT name, pdf_base64 FROM matching_cvs WHERE active=1 ORDER BY name").fetchall()
         return [(r["name"], base64.b64decode(r["pdf_base64"])) for r in rows]
+
+    def saved_cvs(self):
+        """Every saved CV, stopped ones too: name, active, saved_at."""
+        with self.session() as store:
+            return store.execute("SELECT name, active, saved_at FROM matching_cvs ORDER BY name").fetchall()
+
+    def set_cv_active(self, name, active):
+        """Stop (False) or resume (True) a CV's daily checks; returns whether the CV exists."""
+        with self.session() as store, store.transaction():
+            return store.execute("UPDATE matching_cvs SET active=? WHERE name=?", (1 if active else 0, name)).rowcount > 0
+
+    def delete_cv(self, name):
+        """Delete a CV and everything made from it (as matching_cv_delete, migration 010).
+        Returns the numbers of CVs, runs and requests deleted."""
+        with self.session() as store, store.transaction():
+            counts = [store.execute(sql, (name,)).rowcount for sql in (
+                "DELETE FROM matching_cvs WHERE name=?", "DELETE FROM matching_runs WHERE cv_name=?",
+                "DELETE FROM matching_requests WHERE cv_name=? AND state IN ('done', 'failed')")]
+        return dict(zip(("cvs", "runs", "requests"), counts))
 
     def write_cvs(self, directory):
         """Copy the saved CVs into directory; returns their file names."""
@@ -237,6 +258,9 @@ def main(argv=None):
     upload = commands.add_parser("upload", help="Save a CV PDF for daily checks")
     upload.add_argument("pdf", type=Path)
     commands.add_parser("list", help="Saved CVs and recent daily checks")
+    for command, text in (("stop-cv", "Stop a saved CV's daily checks (results stay)"), ("resume-cv", "Resume a CV's daily checks"),
+                          ("delete-cv", "Delete a CV and every check and run made from it")):
+        commands.add_parser(command, help=text).add_argument("name", help="CV file name, as `list` shows it")
     commands.add_parser("pull", help="Copy cloud daily checks into data/matching/runs")
     new_key = commands.add_parser("new-key", help="Make a link to the results website (shown once)")
     new_key.add_argument("--label", required=True, help="Who the link is for, e.g. advisor")
@@ -265,10 +289,21 @@ def main(argv=None):
             cloud.save_cv(args.pdf.name, data)
             print(f"Saved {args.pdf.name} ({len(data) // 1024} KB); daily checks will include it.")
         elif args.command == "list":
-            for name, data in cloud.cvs():
-                print(f"CV  {name} ({len(data) // 1024} KB)")
+            for r in cloud.saved_cvs():
+                print(f"CV  {r['name']}  {'daily checks on' if r['active'] else 'stopped'}  saved {r['saved_at']}")
             for r in cloud.runs():
                 print(f"run {r['run_id']}  {r['cv_name']}  {r['state']}  {r['started_at']}")
+        elif args.command in ("stop-cv", "resume-cv"):
+            if not cloud.set_cv_active(args.name, args.command == "resume-cv"):
+                print(f"No saved CV named {args.name}; see `list`.")
+                return 1
+            print(f"{args.name}: daily checks {'resumed' if args.command == 'resume-cv' else 'stopped'}.")
+        elif args.command == "delete-cv":
+            counts = cloud.delete_cv(args.name)
+            if not any(counts.values()):
+                print(f"Nothing saved under {args.name}; see `list`.")
+                return 1
+            print(f"Deleted {args.name}: {counts['cvs']} CV, {counts['runs']} results, {counts['requests']} uploads.")
         elif args.command == "new-key":
             key = cloud.new_key(args.label)
             print(f"Link for {args.label} (shown only now; anyone with it can read the results):")

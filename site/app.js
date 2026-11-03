@@ -165,7 +165,9 @@ async function listPage() {
   }
   show(
     h("div", { class: "headline" }, h("h1", {}, "New cases by day"),
-      h("button", { class: "btn", type: "button", onclick: () => go({ view: "upload" }) }, "Upload a CV")),
+      h("div", { class: "buttons tight" },
+        h("button", { class: "btn", type: "button", onclick: () => go({ view: "upload" }) }, "Upload a CV"),
+        h("button", { class: "btn light", type: "button", onclick: () => go({ view: "cvs" }) }, "Saved CVs"))),
     h("p", { class: "muted small intro" }, "Each morning the system searches complaints filed in the last two days for every saved CV, " +
       "screens them, reads the relevant ones and matches them to the CV. Each case is shown once."),
     h("div", { class: "controls" },
@@ -221,6 +223,49 @@ function uploadPage() {
     h("p", { class: "muted small intro" }, "The system reads the CV, searches CourtListener for complaints filed in the last year, " +
       "screens them, reads the relevant ones and matches them to the CV. It runs in the cloud and takes about 5 to 10 minutes; " +
       "you can close this page and come back."), form);
+}
+
+// Saved CVs: stop or resume daily checks (unsubscribe), or delete a CV with all its results.
+async function cvsPage() {
+  back.hidden = false;
+  const cvs = await rpc("matching_cvs", { access_key: accessKey() });
+  const status = h("p", { class: "muted small" });
+  const act = (fn) => async () => {
+    try {
+      const message = await fn();
+      if (message === null) return;
+      cache.feed = {};  // The list changes when results are deleted.
+      await cvsPage();
+      app.querySelector(".status").textContent = message;
+    } catch (error) {
+      if (error instanceof AccessError) return show(problem(error));
+      status.textContent = error.message;
+    }
+  };
+  const toggle = (cv) => act(async () => {
+    await rpc("matching_cv_active", { access_key: accessKey(), cv: cv.name, active: !cv.active });
+    return `${cv.name}: daily checks ${cv.active ? "stopped" : "resumed"}.`;
+  });
+  const remove = (cv) => act(async () => {
+    if (!window.confirm(`Delete ${cv.name} and all ${cv.runs} of its results? This cannot be undone.`)) return null;
+    const done = await rpc("matching_cv_delete", { access_key: accessKey(), cv: cv.name });
+    return `Deleted ${cv.name} and ${done.runs} result${done.runs === 1 ? "" : "s"}.`;
+  });
+  status.className = "muted small status";
+  show(h("h1", {}, "Saved CVs"),
+    h("p", { class: "muted small intro" }, "Saved CVs are checked for new cases every morning. Stopping a CV ends its daily checks " +
+      "and keeps its past results; deleting it removes the CV and every result made from it."),
+    status,
+    cvs.length ? cvs.map((cv) => h("section", { class: "card" },
+      h("div", { class: "expert" }, h("h3", {}, cv.name),
+        h("span", { class: `tier ${cv.active ? "high" : "low"}` }, cv.active ? "Daily checks on" : "Stopped")),
+      h("div", { class: "counts" }, meta(`saved ${day(cv.saved_at)}`, `${cv.runs} result${cv.runs === 1 ? "" : "s"}`,
+        cv.last_run && `last ${day(cv.last_run)}`)),
+      h("div", { class: "buttons" },
+        h("button", { class: "btn light", type: "button", onclick: toggle(cv) }, cv.active ? "Stop daily checks" : "Resume daily checks"),
+        h("button", { class: "btn danger", type: "button", onclick: remove(cv) }, "Delete"))))
+      : h("p", { class: "muted" }, "No saved CV. Upload one and tick “Save this CV for daily checks”."),
+    h("div", { class: "buttons" }, h("button", { class: "btn", type: "button", onclick: () => go({ view: "upload" }) }, "Upload a CV")));
 }
 
 function minutes(from, to) {
@@ -387,6 +432,7 @@ async function route() {
     else if (p.get("run")) await runPage(p.get("run"));
     else if (p.get("request")) await requestPage(p.get("request"));
     else if (p.get("view") === "upload") uploadPage();
+    else if (p.get("view") === "cvs") await cvsPage();
     else await listPage();
   } catch (error) {
     show(problem(error));

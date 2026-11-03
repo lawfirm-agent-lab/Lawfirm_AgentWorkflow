@@ -105,3 +105,6 @@ h1.sub { font-size: 22px; margin-top: 8px; }
 .top { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .pick.plain { border: 0; padding: 12px 0 0; }
 input[type="file"] { background: var(--card); }
+.btn.danger { background: transparent; color: #B3261E; border: 1px solid currentColor; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .btn.danger { color: #F2B8B5; } }
+.buttons.tight { margin-top: 0; }
