@@ -126,6 +126,26 @@ class CloudDailyTests(CloudTests):
         runs = self.cloud.runs()
         self.assertEqual([(r["cv_name"], r["state"]) for r in runs], [("jane.pdf", "done")])
 
+    def test_backup_run_leaves_out_cvs_checked_today(self):
+        from datetime import datetime, timedelta, timezone
+        self.cloud.save_cv("jane.pdf", b"%PDF-1.4")
+        self.cloud.save_cv("other.pdf", b"%PDF-1.4")
+        recent = (datetime.now(timezone.utc) - timedelta(hours=5)).isoformat(timespec="seconds")
+        daily_run(self.root / "earlier", "20261103-113000-aaaaaa", "jane.pdf", recent, ["https://cl/docket/1/"])
+        self.cloud.save_run(self.root / "earlier" / "20261103-113000-aaaaaa")
+        checked = []
+
+        def fake_run(model, cv_paths, cases, *args, cv_name=None, **kwargs):
+            checked.append(cv_name)
+            return [{"profile": {"name": "X"}, "results": [], "discovery": {"candidates": []}}]
+
+        with patch.dict("os.environ", ENV), patch("src.web.jobs.Model", return_value=MagicMock(trace=[], stats={})), \
+                patch("src.web.jobs.make_search"), patch("src.web.jobs.run", side_effect=fake_run), \
+                redirect_stdout(io.StringIO()) as out:
+            code = daily.main(["--cloud", "--sqlite", str(self.db), "--skip-checked-within", "20"], data_dir=self.root / "runner")
+        self.assertEqual((code, checked), (0, ["other.pdf"]))
+        self.assertIn("jane.pdf: checked in the last 20 hours; skipped", out.getvalue())
+
     def test_cloud_daily_check_without_cvs_fails(self):
         with redirect_stdout(io.StringIO()) as out:
             code = daily.main(["--cloud", "--sqlite", str(self.db)], data_dir=self.root / "runner")

@@ -1,10 +1,12 @@
 name: Daily new cases for saved CVs
 
 on:
+  # The daily run is started at 11:30 UTC by Supabase pg_cron (migration 013), because GitHub's
+  # schedule can run hours late. GitHub's schedule below is only a backup: it checks the CVs that
+  # had no daily check in the last 20 hours. The 2-day window covers a missed day either way, and
+  # cases shown before are left out.
   schedule:
-    # 11:30 UTC is early morning in the US. GitHub may delay or skip scheduled runs under load;
-    # the 2-day window covers a skipped day, and cases shown before are left out.
-    - cron: "30 11 * * *"
+    - cron: "0 17 * * *"
   workflow_dispatch:
     inputs:
       days:
@@ -54,6 +56,7 @@ jobs:
           MATCHING_LLM_EXTRA_BODY: ${{ vars.MATCHING_LLM_EXTRA_BODY }}
           MATCHING_LLM_API_KEY: ${{ secrets.MATCHING_LLM_API_KEY }}
           DAYS: ${{ inputs.days || '2' }}
+          BACKUP: ${{ github.event_name == 'schedule' }}
           PYTHONDONTWRITEBYTECODE: "1"
         run: |
           if [ -n "$MATCHING_LLM_MODEL" ]; then
@@ -62,4 +65,8 @@ jobs:
               LLM_API_KEY="$MATCHING_LLM_API_KEY"
           fi
           echo "LLM model: $LLM_MODEL"
-          python -m src.web.daily --cloud --days "$DAYS"
+          if [ "$BACKUP" = "true" ]; then
+            python -m src.web.daily --cloud --days "$DAYS" --skip-checked-within 20
+          else
+            python -m src.web.daily --cloud --days "$DAYS"
+          fi
