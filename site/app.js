@@ -13,6 +13,8 @@ const WINDOWS = [7, 14, 30];
 const app = document.getElementById("app");
 const back = document.getElementById("back");
 const cache = { feed: {}, runs: {} };
+const MAX_UPLOAD = 10 * 1024 * 1024;
+let poll = null;  // Timer of the progress page; stopped when the page changes.
 
 class AccessError extends Error {}
 
@@ -47,10 +49,12 @@ function accessKey() {
 }
 
 // Navigation lives in the fragment next to the key, so a home-screen icon or bookmark keeps both.
-function go(view) {
+function go(view, replace = false) {
   const next = new URLSearchParams({ key: accessKey() || "" });
   for (const [name, value] of Object.entries(view)) if (value !== null && value !== undefined) next.set(name, value);
-  location.hash = next.toString();
+  if (!replace) return void (location.hash = next.toString());
+  history.replaceState(null, "", `#${next}`);  // No history entry, so Back skips this page.
+  route();
 }
 
 async function rpc(name, body) {
@@ -62,7 +66,7 @@ async function rpc(name, body) {
   if (response.ok) return response.json();
   const detail = await response.json().catch(() => ({}));
   if (/invalid access key/.test(detail.message || "")) throw new AccessError();
-  throw new Error(`The server answered ${response.status}.`);
+  throw new Error(detail.message || `The server answered ${response.status}.`);
 }
 
 function day(iso) {
@@ -107,12 +111,12 @@ async function feed(days) {
   return cache.feed[days];
 }
 
-function counts(expert) {
+function counts(expert, fresh = true) {
   const found = expert.candidates.length;
   const noPdf = expert.candidates.filter((c) => c.has_pdf === false).length;
   const out = expert.candidates.filter((c) => c.screen && !c.screen.relevant && !c.screen.unclear).length;
   const unclear = expert.candidates.filter((c) => c.screen && c.screen.unclear).length;
-  return meta(`${found} new complaint${found === 1 ? "" : "s"}${noPdf ? ` (${noPdf} without a PDF)` : ""}`,
+  return meta(`${found} ${fresh ? "new " : ""}complaint${found === 1 ? "" : "s"} found${noPdf ? ` (${noPdf} without a PDF)` : ""}`,
     `${out} screened out`, unclear && `${unclear} can't tell`, `${expert.cases.length} read and matched`,
     expert.skipped && `${expert.skipped} shown before`);
 }
@@ -121,7 +125,7 @@ function expertCard(run, expert) {
   const wanted = expert.candidates.filter((c) => c.has_pdf === false && c.screen && c.screen.relevant);
   return h("section", { class: "card" },
     h("div", { class: "expert" }, h("h3", {}, expert.name || run.cv), h("span", { class: "muted small" }, time(run.started))),
-    h("div", { class: "counts" }, counts(expert)),
+    h("div", { class: "counts" }, counts(expert, run.daily !== false)),
     expert.cases.length ? null : wanted.length ? null : h("p", { class: "muted small" }, "No new relevant case in this window."),
     expert.cases.map((c, i) => h("button", { class: "case", type: "button", onclick: () => go({ run: run.run_id, case: i }) },
       h("div", { class: "top" }, tierTag(c.tier), h("span", { class: "score" }, `score ${Number(c.score).toFixed(1)}`)),
@@ -134,7 +138,8 @@ function expertCard(run, expert) {
       h("ul", { class: "small" }, wanted.map((c) => h("li", {},
         h("a", { href: c.url, target: "_blank", rel: "noopener" }, c.name),
         h("div", { class: "muted" }, meta(c.court, c.filed && `filed ${c.filed}`, `PACER ≤ ${money(c.cost || 3)}`)),
-        h("div", {}, c.screen.reason))))) : null);
+        h("div", {}, c.screen.reason),
+        c.elsewhere && c.elsewhere.url ? h("div", {}, "Found elsewhere: ", h("a", { href: c.elsewhere.url, target: "_blank", rel: "noopener" }, c.elsewhere.source || "link")) : null)))) : null);
 }
 
 async function listPage() {
@@ -145,16 +150,22 @@ async function listPage() {
   const runs = await feed(days);
   const names = [...new Set(runs.flatMap((r) => r.experts.map((e) => e.name || r.cv)))].sort();
   const byDay = new Map();
+  const uploads = [];
   for (const run of runs) {
     for (const expert of run.experts) {
       if (who && (expert.name || run.cv) !== who) continue;
+      if (run.daily === false) {
+        uploads.push(h("div", {}, h("h2", { class: "day" }, `Uploaded ${day(run.started)}`), expertCard(run, expert)));
+        continue;
+      }
       const key = day(run.started);
       if (!byDay.has(key)) byDay.set(key, []);
       byDay.get(key).push(expertCard(run, expert));
     }
   }
   show(
-    h("h1", {}, "New cases by day"),
+    h("div", { class: "headline" }, h("h1", {}, "New cases by day"),
+      h("button", { class: "btn", type: "button", onclick: () => go({ view: "upload" }) }, "Upload a CV")),
     h("p", { class: "muted small intro" }, "Each morning the system searches complaints filed in the last two days for every saved CV, " +
       "screens them, reads the relevant ones and matches them to the CV. Each case is shown once."),
     h("div", { class: "controls" },
@@ -162,8 +173,99 @@ async function listPage() {
       names.map((n) => h("button", { class: "chip", type: "button", "aria-pressed": String(who === n), onclick: () => go({ days, cv: n }) }, n))),
     byDay.size ? [...byDay].map(([label, cards]) => h("div", {}, h("h2", { class: "day" }, label), cards))
       : h("p", { class: "muted" }, `No daily check in the last ${days} days.`),
+    uploads.length ? h("div", { class: "section" }, h("h1", { class: "sub" }, "From uploaded CVs"),
+      h("p", { class: "muted small" }, "Complaints filed in the year before the upload."), uploads) : null,
     h("div", { class: "controls" }, h("span", { class: "muted small" }, "Show the last"),
       WINDOWS.map((d) => h("button", { class: "chip", type: "button", "aria-pressed": String(d === days), onclick: () => go({ days: d, cv: who }) }, `${d} days`))));
+}
+
+// ---- upload a CV, follow its run, show its results ----
+
+function fileAsBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result).split(",")[1] || "");
+    reader.onerror = () => reject(new Error("The file could not be read."));
+    reader.readAsDataURL(file);
+  });
+}
+
+function uploadPage() {
+  back.hidden = false;
+  const file = h("input", { type: "file", accept: "application/pdf,.pdf" });
+  const save = h("input", { type: "checkbox", checked: true });
+  const status = h("p", { class: "muted small" });
+  const submit = h("button", { class: "btn", type: "submit" }, "Find cases");
+  const form = h("form", { class: "card", onsubmit: async (event) => {
+    event.preventDefault();
+    const chosen = file.files[0];
+    if (!chosen) return (status.textContent = "Choose a CV (PDF) first.");
+    if (chosen.size > MAX_UPLOAD) return (status.textContent = "The CV is larger than 10 MB.");
+    submit.disabled = true;
+    status.textContent = "Uploading…";
+    try {
+      const answer = await rpc("matching_submit", { access_key: accessKey(), cv_name: chosen.name,
+        pdf_base64: await fileAsBase64(chosen), save: save.checked });
+      go({ request: answer.request_id }, true);
+    } catch (error) {
+      if (error instanceof AccessError) return show(problem(error));
+      status.textContent = error.message;
+      submit.disabled = false;
+    }
+  } },
+    h("label", {}, "CV (PDF, at most 10 MB)"), file,
+    h("label", { class: "pick plain" }, save, h("span", {}, h("b", {}, "Save this CV for daily checks"),
+      h("span", { class: "muted small" }, "New cases for it will then appear here every morning."))),
+    h("div", { class: "buttons" }, submit), status);
+  show(h("h1", {}, "Upload a CV"),
+    h("p", { class: "muted small intro" }, "The system reads the CV, searches CourtListener for complaints filed in the last year, " +
+      "screens them, reads the relevant ones and matches them to the CV. It runs in the cloud and takes about 5 to 10 minutes; " +
+      "you can close this page and come back."), form);
+}
+
+function minutes(from, to) {
+  return Math.max(0, Math.round((new Date(to) - new Date(from)) / 60000));
+}
+
+async function requestPage(id) {
+  back.hidden = false;
+  const state = await rpc("matching_request", { access_key: accessKey(), request: id });
+  if (!state) return show(h("div", { class: "notice" }, h("h3", {}, "Upload not found")));
+  if (state.state === "done" && state.run_id) return go({ run: state.run_id }, true);
+  const waited = minutes(state.created_at, state.now);
+  const lines = {
+    queued: state.error ? state.error : waited >= 10 ? "Still waiting for the cloud to start. Try uploading again later."
+      : "Waiting for the cloud to start (usually 1 to 2 minutes).",
+    running: state.progress || "Running…",
+    failed: state.error || "The run failed.",
+  };
+  show(h("h1", {}, state.cv_name),
+    h("div", { class: "card" },
+      h("div", { class: "top" }, h("span", { class: `tier ${state.state === "failed" ? "low" : "medium"}` },
+        { queued: "Waiting", running: "Running", failed: "Failed" }[state.state] || state.state),
+        h("span", { class: "score" }, `started ${waited} min ago`)),
+      h("p", {}, lines[state.state] || ""),
+      state.state === "failed" || (state.state === "queued" && state.error) ? null
+        : h("p", { class: "muted small" }, "This page refreshes by itself.")));
+  if (state.state === "queued" || state.state === "running") poll = setTimeout(route, 10000);
+}
+
+function summary(result) {
+  return result.map((e) => ({
+    name: e.profile.name, since: e.discovery && e.discovery.since, skipped: e.discovery && e.discovery.skipped,
+    candidates: (e.discovery && e.discovery.candidates) || [],
+    cases: e.results.map((x) => ({ name: x.case.name, url: x.case.url, court: x.case.court, filed: x.case.filed,
+      case_type: x.profile && x.profile.case_type, tier: x.match.tier, score: x.score.total, summary: x.match.summary })),
+  }));
+}
+
+async function runPage(id) {
+  back.hidden = false;
+  const data = await run(id);
+  if (!data) return show(h("div", { class: "notice" }, h("h3", {}, "Results not found")));
+  const runInfo = { run_id: data.run_id, cv: data.cv, started: data.started, daily: false };
+  show(h("h1", {}, "Results"), h("p", { class: "muted small intro" }, `${data.cv} · ${day(data.started)} · complaints filed in the year before`),
+    summary(data.result).map((expert) => expertCard(runInfo, expert)));
 }
 
 // ---- case page ----
@@ -279,8 +381,12 @@ async function route() {
   if (!CONFIG.url || !CONFIG.key) return show(h("div", { class: "notice" }, h("h3", {}, "Not configured"), h("p", { class: "muted" }, "config.js is missing.")));
   if (!accessKey()) return show(problem(new AccessError()));
   const p = params();
+  clearTimeout(poll);
   try {
     if (p.get("run") && p.get("case") !== null) await casePage(p.get("run"), Number(p.get("case")));
+    else if (p.get("run")) await runPage(p.get("run"));
+    else if (p.get("request")) await requestPage(p.get("request"));
+    else if (p.get("view") === "upload") uploadPage();
     else await listPage();
   } catch (error) {
     show(problem(error));
