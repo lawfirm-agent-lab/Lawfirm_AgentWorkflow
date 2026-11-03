@@ -9,6 +9,12 @@ day" page, and saves CVs uploaded with "save this CV" to the cloud too.
 python -m src.matching.cloud --dotenv upload data/matching/cvs/Jane_Doe.pdf   save a CV for daily checks
 python -m src.matching.cloud --dotenv list                                    saved CVs and recent checks
 python -m src.matching.cloud --dotenv pull                                    copy cloud checks to this computer
+python -m src.matching.cloud --dotenv new-key --label advisor                 make a link to the results website
+python -m src.matching.cloud --dotenv keys | revoke-key advisor               list or turn off website links
+
+The results website (site/, on GitHub Pages) reads the daily checks through database functions
+that check an access key (migration 007). Only the key's SHA-256 is stored; new-key prints the
+link with the key once, and revoke-key turns every key with that label off.
 
 Each command reads DATABASE_URL (TLS required) and never prints it; --sqlite PATH uses a local
 file instead, for trying it out.
@@ -18,6 +24,7 @@ import base64
 import hashlib
 import json
 import os
+import secrets
 import sys
 import threading
 from contextlib import contextmanager
@@ -27,6 +34,7 @@ from src.core.config import ConfigError, secure_database_url
 from src.store.db import StoreError, now
 from src.store.pipeline import PipelineStore
 
+SITE_URL = "https://ctrterry.github.io/Lawfirm_AgentWorkflow/"
 RUN_FILES = (("status_json", "status.json"), ("result_json", "result.json"), ("trace_json", "trace.json"))
 
 
@@ -96,6 +104,25 @@ class CloudRuns:
                 (folder.name, status["cv"], status["state"], status["started"], status.get("finished"),
                  files["status_json"], files["result_json"], files["trace_json"], now()))
 
+    def new_key(self, label):
+        """Make a website access key; returns it. Only its hash is saved."""
+        key = secrets.token_urlsafe(32)
+        with self.session() as store, store.transaction():
+            store.execute("INSERT INTO matching_access_keys VALUES (?,?,1,?)",
+                          (hashlib.sha256(key.encode()).hexdigest(), label, now()))
+        return key
+
+    def keys(self):
+        with self.session() as store:
+            return store.execute("SELECT label, active, created_at FROM matching_access_keys "
+                                 "ORDER BY created_at").fetchall()
+
+    def revoke_keys(self, label):
+        """Turn off every key with this label; returns how many were active."""
+        with self.session() as store, store.transaction():
+            return store.execute("UPDATE matching_access_keys SET active=0 WHERE label=? AND active=1",
+                                 (label,)).rowcount
+
     def runs(self, limit=20):
         with self.session() as store:
             return store.execute("SELECT run_id, cv_name, state, started_at, finished_at FROM matching_runs "
@@ -131,6 +158,11 @@ def main(argv=None):
     upload.add_argument("pdf", type=Path)
     commands.add_parser("list", help="Saved CVs and recent daily checks")
     commands.add_parser("pull", help="Copy cloud daily checks into data/matching/runs")
+    new_key = commands.add_parser("new-key", help="Make a link to the results website (shown once)")
+    new_key.add_argument("--label", required=True, help="Who the link is for, e.g. advisor")
+    commands.add_parser("keys", help="List website links (labels only)")
+    revoke = commands.add_parser("revoke-key", help="Turn off the website links with this label")
+    revoke.add_argument("label")
     args = parser.parse_args(argv)
     from src.matching.run import ROOT
     if args.dotenv:
@@ -155,6 +187,15 @@ def main(argv=None):
                 print(f"CV  {name} ({len(data) // 1024} KB)")
             for r in cloud.runs():
                 print(f"run {r['run_id']}  {r['cv_name']}  {r['state']}  {r['started_at']}")
+        elif args.command == "new-key":
+            key = cloud.new_key(args.label)
+            print(f"Link for {args.label} (shown only now; anyone with it can read the results):")
+            print(f"{SITE_URL}#key={key}")
+        elif args.command == "keys":
+            for r in cloud.keys():
+                print(f"{r['label']}  {'active' if r['active'] else 'revoked'}  {r['created_at']}")
+        elif args.command == "revoke-key":
+            print(f"Turned off {cloud.revoke_keys(args.label)} link(s) labelled {args.label}.")
         else:
             print(f"Copied {cloud.pull(ROOT / 'data' / 'matching' / 'runs')} new daily checks from the cloud.")
     except StoreError as exc:

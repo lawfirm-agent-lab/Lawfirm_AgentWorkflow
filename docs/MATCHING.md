@@ -92,6 +92,20 @@ This computer connects with `--cloud` ([src/matching/cloud.py](../src/matching/c
 
 The job needs these repository settings: secrets `DATABASE_URL`, `COURTLISTENER_TOKEN`, `LLM_API_KEY`; variables `LLM_PROVIDER`, `LLM_BASE_URL`, `LLM_MODEL` (and optionally `LLM_EXTRA_BODY`). These are the docket pipeline's LLM settings. To give matching its own model, set the variable `MATCHING_LLM_MODEL`: the job then uses `MATCHING_LLM_PROVIDER`, `MATCHING_LLM_BASE_URL`, `MATCHING_LLM_EXTRA_BODY` and the secret `MATCHING_LLM_API_KEY` instead (for OpenRouter: `openai_compatible`, `https://openrouter.ai/api/v1`, e.g. `deepseek/deepseek-v4.1-flash`, no extra body). With no CV saved in the cloud, the job fails with "No saved CV in the cloud database". The LLM cache is not kept between cloud runs, so each daily check calls the model for everything it reads.
 
+### Results website (phone)
+
+[site/](../site/) is a read-only website on GitHub Pages (https://ctrterry.github.io/Lawfirm_AgentWorkflow/): "New cases by day" per expert, and for each case why it fits, the case summary, the match reasons with their CV and complaint quotes, and an editable email draft that opens in Gmail or the phone's mail app. It is plain HTML and JavaScript and can be added to a phone's home screen.
+
+Access is by link: `https://…/#key=…`. The page sends the key only to two database functions ([007_matching_feed.postgres.sql](../sql/migrations/007_matching_feed.postgres.sql)), `matching_feed` and `matching_run`, which return data only when the SHA-256 of the key matches an active row in `matching_access_keys`. The tables stay closed to Supabase's API roles (RLS without policies); the functions run as their owner. The page itself holds only the Supabase URL and the publishable key, which alone read nothing.
+
+```
+.venv/bin/python -m src.matching.cloud --dotenv new-key --label advisor   # prints the link once
+.venv/bin/python -m src.matching.cloud --dotenv keys                      # labels and state, never keys
+.venv/bin/python -m src.matching.cloud --dotenv revoke-key advisor        # the link stops working
+```
+
+[pages.yml](../.github/workflows/pages.yml) publishes `site/` on every push to main that changes it, writing `config.js` from the repository variables `SUPABASE_URL` and `SUPABASE_ANON_KEY` (the publishable key; the job refuses a secret key). The manifest has no `start_url`, so a home-screen icon opens the link it was added from, key included.
+
 - Sample CVs: put PDFs in `data/matching/cvs/` (the two public CVs used so far are there locally).
 - Fixed case pool: [eval/matching_cases.json](../eval/matching_cases.json) (saved CourtListener entries or a local PDF per case).
 - Everything generated stays under `data/matching/` (ignored by git): runs, LLM cache, search cache, downloaded PDFs, the request ledger.

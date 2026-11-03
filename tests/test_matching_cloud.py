@@ -1,4 +1,5 @@
 """Cloud copy of saved CVs and daily checks, with a SQLite file standing in for the cloud database."""
+import hashlib
 import io
 import tempfile
 import unittest
@@ -56,6 +57,16 @@ class CloudTests(unittest.TestCase):
         text = page.get_data(as_text=True)
         self.assertIn("Strong fit.", text)
         self.assertIn("1 new copied just now", text)
+
+    def test_access_keys_store_only_a_hash(self):
+        key = self.cloud.new_key("advisor")
+        rows = self.store.execute("SELECT key_hash, label, active FROM matching_access_keys").fetchall()
+        self.assertEqual(len(rows), 1)
+        self.assertNotIn(key, rows[0]["key_hash"])
+        self.assertEqual(rows[0]["key_hash"], hashlib.sha256(key.encode()).hexdigest())
+        self.assertEqual(self.cloud.revoke_keys("advisor"), 1)
+        self.assertEqual(self.cloud.revoke_keys("advisor"), 0)
+        self.assertEqual([r["active"] for r in self.cloud.keys()], [0])
 
 
 class CloudDailyTests(CloudTests):

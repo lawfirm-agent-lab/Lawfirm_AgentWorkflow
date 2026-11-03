@@ -1,4 +1,9 @@
-"""Apply versioned SQL migrations once, in order, inside one transaction."""
+"""Apply versioned SQL migrations once, in order, inside one transaction.
+
+A file named NNN_name.postgres.sql runs on PostgreSQL only (functions, grants); on SQLite it is
+recorded as applied without running, so both backends keep the same version list.
+"""
+import re
 from pathlib import Path
 
 from src.store.db import now
@@ -21,8 +26,20 @@ END $$
 
 
 def statements(text):
+    """Split on semicolons outside dollar-quoted bodies ($$ ... $$, $body$ ... $body$)."""
     lines = [line for line in text.splitlines() if not line.strip().startswith("--")]
-    return [s.strip() for s in "\n".join(lines).split(";") if s.strip()]
+    text, parts, start, tag = "\n".join(lines), [], 0, None
+    for match in re.finditer(r"\$[A-Za-z_]*\$|;", text):
+        token = match.group()
+        if token == ";" and tag is None:
+            parts.append(text[start:match.start()])
+            start = match.end()
+        elif token != ";" and tag is None:
+            tag = token
+        elif token == tag:
+            tag = None
+    parts.append(text[start:])
+    return [s.strip() for s in parts if s.strip()]
 
 
 def apply_migrations(store, directory=MIGRATIONS):
@@ -38,8 +55,9 @@ def apply_migrations(store, directory=MIGRATIONS):
         for path in files:
             if path.stem in done:
                 continue
-            for statement in statements(path.read_text(encoding="utf-8")):
-                store.execute(statement)
+            if store.backend == "postgres" or not path.stem.endswith(".postgres"):
+                for statement in statements(path.read_text(encoding="utf-8")):
+                    store.execute(statement)
             store.execute("INSERT INTO schema_migrations VALUES (?, ?)", (path.stem, now()))
             applied.append(path.stem)
         if store.backend == "postgres":
