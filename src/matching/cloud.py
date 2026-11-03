@@ -8,15 +8,20 @@ day" page, and saves CVs uploaded with "save this CV" to the cloud too.
 
 python -m src.matching.cloud --dotenv upload data/matching/cvs/Jane_Doe.pdf   save a CV for daily checks
 python -m src.matching.cloud --dotenv list                                    saved CVs and recent checks
+python -m src.matching.cloud --dotenv stop-cv | resume-cv NAME.pdf            stop or resume a CV's daily checks
+python -m src.matching.cloud --dotenv delete-cv NAME.pdf                      delete a CV and every result from it
 python -m src.matching.cloud --dotenv pull                                    copy cloud checks to this computer
-python -m src.matching.cloud --dotenv new-key --label advisor                 make a link to the results website
+python -m src.matching.cloud --dotenv new-key --label advisor [--admin]       make a person's link to the results website
 python -m src.matching.cloud --dotenv keys | revoke-key advisor               list or turn off website links
 python -m src.matching.cloud --dotenv add-emails                              add lawyers' addresses to older checks
 python -m src.matching.cloud --dotenv set-dispatch-token                      let uploads start cloud runs (Vault)
 
 The results website (site/, on GitHub Pages) reads the daily checks through database functions
 that check an access key (migration 007). Only the key's SHA-256 is stored; new-key prints the
-link with the key once, and revoke-key turns every key with that label off.
+link with the key once, and revoke-key turns every key with that label off. Each link is a
+person (its label): they see and manage only the CVs they uploaded and their results; an --admin
+link sees and manages everything. CVs saved here (upload, the local web app) are the admin's
+unless upload --owner names someone.
 
 Each command reads DATABASE_URL (TLS required) and never prints it; --sqlite PATH uses a local
 file instead, for trying it out.
@@ -68,18 +73,40 @@ class CloudRuns:
         finally:
             store.close()
 
-    def save_cv(self, name, data):
+    def save_cv(self, name, data, owner=None):
+        """Save a CV for daily checks. owner: the label of the person it belongs to (None: the
+        admin's). Saving an existing name again replaces the PDF and keeps its owner."""
         with self.session() as store, store.transaction():
             store.execute(
-                "INSERT INTO matching_cvs VALUES (?,?,?,1,?) ON CONFLICT (name) DO UPDATE SET "
+                "INSERT INTO matching_cvs (name, pdf_base64, sha256, active, saved_at, owner) VALUES (?,?,?,1,?,?) "
+                "ON CONFLICT (name) DO UPDATE SET "
                 "pdf_base64=excluded.pdf_base64, sha256=excluded.sha256, active=1, saved_at=excluded.saved_at",
-                (name, base64.b64encode(data).decode("ascii"), hashlib.sha256(data).hexdigest(), now()))
+                (name, base64.b64encode(data).decode("ascii"), hashlib.sha256(data).hexdigest(), now(), owner))
 
     def cvs(self):
         """Active saved CVs as (name, PDF bytes), by name."""
         with self.session() as store:
             rows = store.execute("SELECT name, pdf_base64 FROM matching_cvs WHERE active=1 ORDER BY name").fetchall()
         return [(r["name"], base64.b64decode(r["pdf_base64"])) for r in rows]
+
+    def saved_cvs(self):
+        """Every saved CV, stopped ones too: name, owner, active, saved_at."""
+        with self.session() as store:
+            return store.execute("SELECT name, owner, active, saved_at FROM matching_cvs ORDER BY name").fetchall()
+
+    def set_cv_active(self, name, active):
+        """Stop (False) or resume (True) a CV's daily checks; returns whether the CV exists."""
+        with self.session() as store, store.transaction():
+            return store.execute("UPDATE matching_cvs SET active=? WHERE name=?", (1 if active else 0, name)).rowcount > 0
+
+    def delete_cv(self, name):
+        """Delete a CV and everything made from it (as matching_cv_delete, migration 010).
+        Returns the numbers of CVs, runs and requests deleted."""
+        with self.session() as store, store.transaction():
+            counts = [store.execute(sql, (name,)).rowcount for sql in (
+                "DELETE FROM matching_cvs WHERE name=?", "DELETE FROM matching_runs WHERE cv_name=?",
+                "DELETE FROM matching_requests WHERE cv_name=? AND state IN ('done', 'failed')")]
+        return dict(zip(("cvs", "runs", "requests"), counts))
 
     def write_cvs(self, directory):
         """Copy the saved CVs into directory; returns their file names."""
@@ -92,32 +119,38 @@ class CloudRuns:
             names.append(name)
         return names
 
-    def save_run(self, folder):
-        """Save a finished run folder (status, result and trace). Saving it again replaces it."""
+    def save_run(self, folder, owner=None):
+        """Save a finished run folder (status, result and trace). Saving it again replaces it.
+        owner: whose run it is; by default the owner of the saved CV it was made from."""
         files = {}
         for column, file_name in RUN_FILES:
             path = folder / file_name
             files[column] = path.read_text(encoding="utf-8") if path.exists() else None
         status = json.loads(files["status_json"])
         with self.session() as store, store.transaction():
+            if owner is None:
+                row = store.execute("SELECT owner FROM matching_cvs WHERE name=?", (status["cv"],)).fetchone()
+                owner = row["owner"] if row else None
             store.execute(
-                "INSERT INTO matching_runs VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT (run_id) DO UPDATE SET "
+                "INSERT INTO matching_runs (run_id, cv_name, state, started_at, finished_at, status_json, result_json, "
+                "trace_json, saved_at, owner) VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT (run_id) DO UPDATE SET "
                 "state=excluded.state, finished_at=excluded.finished_at, status_json=excluded.status_json, "
                 "result_json=excluded.result_json, trace_json=excluded.trace_json, saved_at=excluded.saved_at",
                 (folder.name, status["cv"], status["state"], status["started"], status.get("finished"),
-                 files["status_json"], files["result_json"], files["trace_json"], now()))
+                 files["status_json"], files["result_json"], files["trace_json"], now(), owner))
 
-    def new_key(self, label):
-        """Make a website access key; returns it. Only its hash is saved."""
+    def new_key(self, label, admin=False):
+        """Make a website access key for the person `label`; returns it. Only its hash is saved.
+        A person sees and manages only their own CVs; an admin key sees and manages all."""
         key = secrets.token_urlsafe(32)
         with self.session() as store, store.transaction():
-            store.execute("INSERT INTO matching_access_keys VALUES (?,?,1,?)",
-                          (hashlib.sha256(key.encode()).hexdigest(), label, now()))
+            store.execute("INSERT INTO matching_access_keys (key_hash, label, active, created_at, role) VALUES (?,?,1,?,?)",
+                          (hashlib.sha256(key.encode()).hexdigest(), label, now(), "admin" if admin else "user"))
         return key
 
     def keys(self):
         with self.session() as store:
-            return store.execute("SELECT label, active, created_at FROM matching_access_keys "
+            return store.execute("SELECT label, role, active, created_at FROM matching_access_keys "
                                  "ORDER BY created_at").fetchall()
 
     def revoke_keys(self, label):
@@ -236,10 +269,15 @@ def main(argv=None):
     commands = parser.add_subparsers(dest="command", required=True)
     upload = commands.add_parser("upload", help="Save a CV PDF for daily checks")
     upload.add_argument("pdf", type=Path)
+    upload.add_argument("--owner", help="Label of the person it belongs to (default: the admin's)")
     commands.add_parser("list", help="Saved CVs and recent daily checks")
+    for command, text in (("stop-cv", "Stop a saved CV's daily checks (results stay)"), ("resume-cv", "Resume a CV's daily checks"),
+                          ("delete-cv", "Delete a CV and every check and run made from it")):
+        commands.add_parser(command, help=text).add_argument("name", help="CV file name, as `list` shows it")
     commands.add_parser("pull", help="Copy cloud daily checks into data/matching/runs")
     new_key = commands.add_parser("new-key", help="Make a link to the results website (shown once)")
-    new_key.add_argument("--label", required=True, help="Who the link is for, e.g. advisor")
+    new_key.add_argument("--label", required=True, help="Who the link is for, e.g. advisor (one label per person)")
+    new_key.add_argument("--admin", action="store_true", help="Sees and manages every CV (for you only)")
     commands.add_parser("keys", help="List website links (labels only)")
     revoke = commands.add_parser("revoke-key", help="Turn off the website links with this label")
     revoke.add_argument("label")
@@ -262,20 +300,31 @@ def main(argv=None):
             if data[:1024].find(b"%PDF-") < 0:
                 print(f"{args.pdf} is not a PDF")
                 return 1
-            cloud.save_cv(args.pdf.name, data)
+            cloud.save_cv(args.pdf.name, data, args.owner)
             print(f"Saved {args.pdf.name} ({len(data) // 1024} KB); daily checks will include it.")
         elif args.command == "list":
-            for name, data in cloud.cvs():
-                print(f"CV  {name} ({len(data) // 1024} KB)")
+            for r in cloud.saved_cvs():
+                print(f"CV  {r['name']}  owner {r['owner'] or '(admin)'}  {'daily checks on' if r['active'] else 'stopped'}  saved {r['saved_at']}")
             for r in cloud.runs():
                 print(f"run {r['run_id']}  {r['cv_name']}  {r['state']}  {r['started_at']}")
+        elif args.command in ("stop-cv", "resume-cv"):
+            if not cloud.set_cv_active(args.name, args.command == "resume-cv"):
+                print(f"No saved CV named {args.name}; see `list`.")
+                return 1
+            print(f"{args.name}: daily checks {'resumed' if args.command == 'resume-cv' else 'stopped'}.")
+        elif args.command == "delete-cv":
+            counts = cloud.delete_cv(args.name)
+            if not any(counts.values()):
+                print(f"Nothing saved under {args.name}; see `list`.")
+                return 1
+            print(f"Deleted {args.name}: {counts['cvs']} CV, {counts['runs']} results, {counts['requests']} uploads.")
         elif args.command == "new-key":
-            key = cloud.new_key(args.label)
-            print(f"Link for {args.label} (shown only now; anyone with it can read the results):")
+            key = cloud.new_key(args.label, args.admin)
+            print(f"{'Admin link' if args.admin else 'Link'} for {args.label} (shown only now; whoever has it acts as {args.label}):")
             print(f"{SITE_URL}#key={key}")
         elif args.command == "keys":
             for r in cloud.keys():
-                print(f"{r['label']}  {'active' if r['active'] else 'revoked'}  {r['created_at']}")
+                print(f"{r['label']}  {r['role']}  {'active' if r['active'] else 'revoked'}  {r['created_at']}")
         elif args.command == "add-emails":
             print(f"Added lawyers' addresses to {cloud.add_emails(document_pages())} saved checks.")
         elif args.command == "set-dispatch-token":

@@ -90,7 +90,7 @@ class PostgreSQLSiteFunctionTests(unittest.TestCase):
         daily_run(root, '20261103-090000-aaaaaa', 'jane.pdf', datetime.now(timezone.utc).isoformat(timespec='seconds'),
                   ['https://cl/docket/1/', 'https://cl/docket/2/'])
         self.cloud.save_run(root / '20261103-090000-aaaaaa')
-        self.key = self.cloud.new_key('test')
+        self.key = self.cloud.new_key('test', admin=True)  # The fixture run has no owner: the admin's.
 
     def call(self, sql, *args):
         return next(iter(self.store.execute(sql, args).fetchone().values()))
@@ -139,6 +139,44 @@ class PostgreSQLSiteFunctionTests(unittest.TestCase):
         with self.assertRaises(StoreError):
             self.call('SELECT matching_submit(?, ?, ?, ?)', self.key, 'cv.pdf', pdf, False)
         self.assertEqual(self.cloud.cvs(), [])  # save=false: the CV is kept only with the request.
+
+    def test_site_lists_stops_and_deletes_saved_cvs(self):
+        from src.store.db import StoreError
+        self.cloud.save_cv('jane.pdf', b'%PDF-1.4')
+        listed = self.call('SELECT matching_cvs(?)', self.key)
+        self.assertEqual([(c['name'], c['active'], c['runs']) for c in listed], [('jane.pdf', True, 1)])
+        self.call('SELECT matching_cv_active(?, ?, ?)', self.key, 'jane.pdf', False)
+        self.assertEqual(self.cloud.cvs(), [])
+        with self.assertRaises(StoreError):
+            self.call('SELECT matching_cv_delete(?, ?)', 'wrong', 'jane.pdf')
+        done = self.call('SELECT matching_cv_delete(?, ?)', self.key, 'jane.pdf')
+        self.assertEqual((done['cvs'], done['runs']), (1, 1))
+        self.assertEqual(self.call('SELECT matching_feed(?, ?)', self.key, 14), [])
+        with self.assertRaises(StoreError):
+            self.call('SELECT matching_cv_delete(?, ?)', self.key, 'jane.pdf')
+
+    def test_people_see_and_manage_only_their_own_cvs(self):
+        import base64
+        from src.store.db import StoreError
+        pdf = base64.b64encode(b'%PDF-1.4 ' + b'x' * 200).decode()
+        alice, bob = self.cloud.new_key('alice'), self.cloud.new_key('bob')
+        self.assertEqual(self.call('SELECT matching_whoami(?)', alice), {'who': 'alice', 'admin': False})
+        self.assertEqual(self.call('SELECT matching_feed(?, ?)', alice, 14), [])  # The admin's run is not hers.
+        first = self.call('SELECT matching_submit(?, ?, ?, ?)', alice, 'cv.pdf', pdf, True)
+        second = self.call('SELECT matching_submit(?, ?, ?, ?)', bob, 'cv.pdf', pdf, True)
+        self.assertEqual((first['cv_name'], second['cv_name']), ('cv.pdf', 'cv-2.pdf'))  # Bob cannot replace hers.
+        self.assertEqual([c['name'] for c in self.call('SELECT matching_cvs(?)', alice)], ['cv.pdf'])
+        self.assertEqual([c['name'] for c in self.call('SELECT matching_cvs(?)', bob)], ['cv-2.pdf'])
+        self.assertEqual(len(self.call('SELECT matching_cvs(?)', self.key)), 2)  # The admin sees both.
+        self.assertIsNone(self.call('SELECT matching_request(?, ?)', bob, first['request_id']))
+        with self.assertRaises(StoreError):
+            self.call('SELECT matching_cv_active(?, ?, ?)', bob, 'cv.pdf', False)
+        with self.assertRaises(StoreError):
+            self.call('SELECT matching_cv_delete(?, ?)', bob, 'cv.pdf')
+        self.assertIsNone(self.call('SELECT matching_run(?, ?)', alice, '20261103-090000-aaaaaa'))  # The admin's run.
+        self.call('SELECT matching_cv_active(?, ?, ?)', alice, 'cv.pdf', False)
+        self.call('SELECT matching_cv_delete(?, ?)', self.key, 'cv-2.pdf')  # The admin can manage anyone's.
+        self.assertEqual([n for n, _ in self.cloud.cvs()], [])
 
 
 if __name__ == '__main__':

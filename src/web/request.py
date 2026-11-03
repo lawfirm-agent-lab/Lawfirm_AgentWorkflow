@@ -6,7 +6,8 @@ Reads the request's CV from the cloud database, searches CourtListener for compl
 last year (no fixed case pool), and saves the run like a daily check so the website shows it. The
 request's state follows along: running (with progress after every step), then done with the
 run id, or failed with the error. The CV copy in the request is cleared at the end unless it was
-also saved for daily checks. --sqlite PATH stands in for the cloud database.
+also saved for daily checks. The run belongs to whoever uploaded the CV (the request's owner).
+--sqlite PATH stands in for the cloud database.
 """
 import argparse
 import base64
@@ -77,7 +78,7 @@ def run(cloud, store, request_id, data_dir):
         run_id = jobs.start(path, request["cv_name"], find=True, wait=True)
     status = jobs.status(run_id)
     try:
-        cloud.save_run(jobs.folder(run_id))
+        cloud.save_run(jobs.folder(run_id), owner=request["owner"])
     except StoreError as exc:
         status = {**status, "state": "failed", "error": f"Results not saved: {exc}"}
     done = status["state"] == "done"

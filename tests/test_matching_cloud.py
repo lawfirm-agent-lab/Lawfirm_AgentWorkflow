@@ -91,6 +91,20 @@ class CloudTests(unittest.TestCase):
         saved = json.loads((self.root / "laptop" / "20261030-090000-aaaaaa" / "result.json").read_text())
         self.assertEqual(saved[0]["results"][0]["profile"]["counsel"][0]["email"], "mark.milton@miltonlawgroup.com")
 
+    def test_stop_resume_and_delete_a_cv(self):
+        self.cloud.save_cv("jane.pdf", b"%PDF-1.4")
+        self.cloud.save_cv("other.pdf", b"%PDF-1.4")
+        daily_run(self.root / "runner", "20261030-090000-aaaaaa", "jane.pdf", "2026-10-30T16:00:00+00:00", ["https://cl/docket/1/"])
+        self.cloud.save_run(self.root / "runner" / "20261030-090000-aaaaaa")
+        self.assertTrue(self.cloud.set_cv_active("jane.pdf", False))
+        self.assertEqual([n for n, _ in self.cloud.cvs()], ["other.pdf"])  # Stopped: no daily checks.
+        self.assertEqual(len(self.cloud.runs()), 1)  # Past results stay.
+        self.assertTrue(self.cloud.set_cv_active("jane.pdf", True))
+        self.assertFalse(self.cloud.set_cv_active("nobody.pdf", False))
+        self.assertEqual(self.cloud.delete_cv("jane.pdf"), {"cvs": 1, "runs": 1, "requests": 0})
+        self.assertEqual([r["name"] for r in self.cloud.saved_cvs()], ["other.pdf"])
+        self.assertEqual(self.cloud.runs(), [])
+
 
 class CloudDailyTests(CloudTests):
     """The daily command against a SQLite file (--sqlite); not rerun on PostgreSQL."""
