@@ -26,7 +26,8 @@ class RequestTests(unittest.TestCase):
 
     def queue(self, request_id="r1", save=0):
         with self.store.transaction():
-            self.store.execute("INSERT INTO matching_requests VALUES (?,?,?,?,'queued',NULL,NULL,NULL,'t','t')",
+            self.store.execute("INSERT INTO matching_requests (request_id, cv_name, pdf_base64, save, state, created_at, "
+                               "updated_at, owner) VALUES (?,?,?,?,'queued','t','t','jane')",
                                (request_id, "jane.pdf", base64.b64encode(b"%PDF-1.4 cv").decode(), save))
 
     def run_request(self, request_id="r1", fail=False):
@@ -57,6 +58,8 @@ class RequestTests(unittest.TestCase):
         row = self.cloud.request("r1")
         self.assertEqual((row["state"], row["progress"], row["pdf_base64"]), ("done", "Finished", None))
         self.assertEqual([r["run_id"] for r in self.cloud.runs()], [row["run_id"]])
+        owner = self.store.execute("SELECT owner FROM matching_runs").fetchone()["owner"]
+        self.assertEqual(owner, "jane")  # The run belongs to whoever uploaded the CV.
         self.assertEqual(self.run_request()[0], 1)  # Not queued any more: not run again.
 
     def test_saved_cv_is_kept_and_failure_is_reported(self):

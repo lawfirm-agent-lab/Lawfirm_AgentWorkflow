@@ -108,3 +108,4 @@ input[type="file"] { background: var(--card); }
 .btn.danger { background: transparent; color: #B3261E; border: 1px solid currentColor; }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .btn.danger { color: #F2B8B5; } }
 .buttons.tight { margin-top: 0; }
+.who { margin-left: auto; font-size: 13px; opacity: .85; }

@@ -12,7 +12,8 @@ const KEPT = "expert-match-key";
 const WINDOWS = [7, 14, 30];
 const app = document.getElementById("app");
 const back = document.getElementById("back");
-const cache = { feed: {}, runs: {} };
+const whoLabel = document.getElementById("who");
+const cache = { feed: {}, runs: {}, me: null };
 const MAX_UPLOAD = 10 * 1024 * 1024;
 let poll = null;  // Timer of the progress page; stopped when the page changes.
 
@@ -104,6 +105,17 @@ function problem(error) {
     h("p", { class: "muted" }, error.message), h("button", { class: "btn", type: "button", onclick: route }, "Try again"));
 }
 
+// Who this link belongs to: {who, admin}. Each person sees only their own CVs and results.
+async function me() {
+  if (!cache.me) cache.me = await rpc("matching_whoami", { access_key: accessKey() });
+  whoLabel.textContent = `${cache.me.who}${cache.me.admin ? " · admin" : ""}`;
+  return cache.me;
+}
+
+function ownerNote(owner) {
+  return cache.me && cache.me.admin ? `owner: ${owner || "admin"}` : null;
+}
+
 // ---- list page: new cases by day ----
 
 async function feed(days) {
@@ -124,7 +136,7 @@ function counts(expert, fresh = true) {
 function expertCard(run, expert) {
   const wanted = expert.candidates.filter((c) => c.has_pdf === false && c.screen && c.screen.relevant);
   return h("section", { class: "card" },
-    h("div", { class: "expert" }, h("h3", {}, expert.name || run.cv), h("span", { class: "muted small" }, time(run.started))),
+    h("div", { class: "expert" }, h("h3", {}, expert.name || run.cv), h("span", { class: "muted small" }, meta(ownerNote(run.owner), time(run.started)))),
     h("div", { class: "counts" }, counts(expert, run.daily !== false)),
     expert.cases.length ? null : wanted.length ? null : h("p", { class: "muted small" }, "No new relevant case in this window."),
     expert.cases.map((c, i) => h("button", { class: "case", type: "button", onclick: () => go({ run: run.run_id, case: i }) },
@@ -174,7 +186,10 @@ async function listPage() {
       h("button", { class: "chip", type: "button", "aria-pressed": String(!who), onclick: () => go({ days }) }, "All experts"),
       names.map((n) => h("button", { class: "chip", type: "button", "aria-pressed": String(who === n), onclick: () => go({ days, cv: n }) }, n))),
     byDay.size ? [...byDay].map(([label, cards]) => h("div", {}, h("h2", { class: "day" }, label), cards))
-      : h("p", { class: "muted" }, `No daily check in the last ${days} days.`),
+      : runs.length ? h("p", { class: "muted" }, `No daily check in the last ${days} days.`)
+        : h("div", { class: "notice" }, h("h3", {}, "Nothing here yet"),
+          h("p", { class: "muted" }, "Upload a CV to find matching cases. Tick \u201cSave this CV for daily checks\u201d " +
+            "and new cases for it will appear here every morning. You only see the CVs you upload.")),
     uploads.length ? h("div", { class: "section" }, h("h1", { class: "sub" }, "From uploaded CVs"),
       h("p", { class: "muted small" }, "Complaints filed in the year before the upload."), uploads) : null,
     h("div", { class: "controls" }, h("span", { class: "muted small" }, "Show the last"),
@@ -253,13 +268,14 @@ async function cvsPage() {
   });
   status.className = "muted small status";
   show(h("h1", {}, "Saved CVs"),
-    h("p", { class: "muted small intro" }, "Saved CVs are checked for new cases every morning. Stopping a CV ends its daily checks " +
+    h("p", { class: "muted small intro" }, (cache.me && cache.me.admin ? "All saved CVs (admin). " : "The CVs you saved. ") +
+      "Saved CVs are checked for new cases every morning. Stopping a CV ends its daily checks " +
       "and keeps its past results; deleting it removes the CV and every result made from it."),
     status,
     cvs.length ? cvs.map((cv) => h("section", { class: "card" },
       h("div", { class: "expert" }, h("h3", {}, cv.name),
         h("span", { class: `tier ${cv.active ? "high" : "low"}` }, cv.active ? "Daily checks on" : "Stopped")),
-      h("div", { class: "counts" }, meta(`saved ${day(cv.saved_at)}`, `${cv.runs} result${cv.runs === 1 ? "" : "s"}`,
+      h("div", { class: "counts" }, meta(ownerNote(cv.owner), `saved ${day(cv.saved_at)}`, `${cv.runs} result${cv.runs === 1 ? "" : "s"}`,
         cv.last_run && `last ${day(cv.last_run)}`)),
       h("div", { class: "buttons" },
         h("button", { class: "btn light", type: "button", onclick: toggle(cv) }, cv.active ? "Stop daily checks" : "Resume daily checks"),
@@ -428,6 +444,7 @@ async function route() {
   const p = params();
   clearTimeout(poll);
   try {
+    await me();
     if (p.get("run") && p.get("case") !== null) await casePage(p.get("run"), Number(p.get("case")));
     else if (p.get("run")) await runPage(p.get("run"));
     else if (p.get("request")) await requestPage(p.get("request"));
