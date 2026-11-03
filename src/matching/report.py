@@ -35,8 +35,16 @@ nav.tabs{gap:4px;border-bottom:1px solid var(--line);padding-bottom:8px;margin-b
 h3{font-size:15px;margin:20px 0 4px}details.group{margin-top:16px}details.group>summary{font-size:15px}
 .filters{margin:10px 0}.chip{font:inherit;font-size:12px;margin:2px;padding:2px 10px;border-radius:12px;border:1px solid var(--line);background:var(--bg);color:var(--fg);cursor:pointer}
 .chip.on{background:var(--fg);color:var(--bg)}.score{font-size:12px;margin-top:4px}code{font-size:12px}
+label.to{display:block;font-size:12px;margin:3px 0}input.add{font:inherit;font-size:12px;width:100%;margin:4px 0;padding:3px 6px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg)}
 """
-SCRIPT = """function copyDraft(b){navigator.clipboard.writeText(b.previousElementSibling.innerText).then(function(){
+SCRIPT = """function mailParts(b){var m=b.closest('.mail'),c=m.querySelectorAll('input[type=checkbox]:checked'),to=[];
+for(var i=0;i<c.length;i++)to.push(c[i].value);
+m.querySelector('.add').value.split(/[\\s,;]+/).forEach(function(a){if(/^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$/.test(a))to.push(a)});
+return {to:to.filter(function(v,i){return to.indexOf(v)===i}),su:m.querySelector('.subj').textContent,body:m.querySelector('pre').textContent}}
+function openMail(b,kind){var p=mailParts(b),c=encodeURIComponent;
+if(kind==='gmail')window.open('https://mail.google.com/mail/?view=cm&fs=1&to='+c(p.to.join(','))+'&su='+c(p.su)+'&body='+c(p.body),'_blank','noopener');
+else location.href='mailto:'+p.to.map(c).join(',')+'?subject='+c(p.su)+'&body='+c(p.body)}
+function copyDraft(b){var p=mailParts(b);navigator.clipboard.writeText('To: '+p.to.join(', ')+'\\nSubject: '+p.su+'\\n\\n'+p.body).then(function(){
 b.textContent='Copied';setTimeout(function(){b.textContent='Copy'},1500)})}
 function filterRows(b){var s=b.closest('section'),t=b.dataset.tag;
 s.querySelectorAll('.chip').forEach(function(c){c.classList.toggle('on',c===b)});
@@ -102,17 +110,39 @@ def sources_cell(case, match, profile):
     return "".join(parts)
 
 
+def recipients(mail, profile):
+    """Every lawyer in the complaint with the address found for them (checked when they represent
+    the party the draft is for), then the complaint's other addresses, unchecked."""
+    rows = []
+    for c in (profile or {}).get("counsel", []):
+        note = ", ".join(v for v in (c.get("firm"), c.get("party") and f"for {c['party']}") if v)
+        if c.get("email"):
+            on = not mail.get("to_party") or c.get("party") == mail["to_party"]
+            box = f"<input type='checkbox' value='{e(c['email'])}'{' checked' if on else ''}>"
+        else:
+            box = "<input type='checkbox' disabled>"
+        rows.append(f"<label class='to'>{box} {e(c['name'])} <span class='muted'>"
+                    f"{e(c.get('email') or 'no address in the complaint')}{' · ' + e(note) if note else ''}</span></label>")
+    others = (profile or {}).get("emails", [])
+    if others:
+        rows.append("<div class='muted'>Other addresses in the complaint</div>")
+    rows += [f"<label class='to'><input type='checkbox' value='{e(x['email'])}'> <span class='muted'>{e(x['email'])} · p. {x['page']}</span></label>"
+             for x in others]
+    return "".join(rows) or "<div class='muted'>No lawyer named in the complaint.</div>"
+
+
 def mail_cell(match, profile):
     notes = "".join(f"<div class='warn'>{e(n)}</div>" for n in match["notes"])
     if not match["email"]:
         return f"<span class='muted'>No draft (tier below Medium).</span>{notes}"
     mail = match["email"]
-    counsel = [c for c in (profile or {}).get("counsel", []) if not mail.get("to_party") or (c.get("party") or "") == mail["to_party"]]
-    to = "; ".join(f"{c['name']}{', ' + c['firm'] if c.get('firm') else ''}" for c in counsel[:4]) or "counsel of record"
-    return (f"<div><span class='lbl'>To</span> {e(to)}{' (' + e(mail['to_party']) + ')' if mail.get('to_party') else ''}</div>"
-            f"<div><span class='lbl'>Subject</span> {e(mail['subject'])}</div>"
-            f"<details><summary>Show draft</summary><pre>{e(mail['body'])}</pre>"
-            f"<button type='button' class='copy' onclick='copyDraft(this)'>Copy</button></details>{notes}")
+    return (f"<div class='mail'><div class='lbl'>To{' (draft for ' + e(mail['to_party']) + ')' if mail.get('to_party') else ''}</div>"
+            f"{recipients(mail, profile)}<input class='add' type='email' placeholder='Add an address'>"
+            f"<div><span class='lbl'>Subject</span> <span class='subj'>{e(mail['subject'])}</span></div>"
+            f"<details><summary>Show draft</summary><pre>{e(mail['body'])}</pre></details>"
+            f"<button type='button' class='copy' onclick='openMail(this,\"gmail\")'>Open in Gmail</button> "
+            f"<button type='button' class='copy' onclick='openMail(this,\"mail\")'>Mail app</button> "
+            f"<button type='button' class='copy' onclick='copyDraft(this)'>Copy</button></div>{notes}")
 
 
 GROUPS = ("high", "medium", "low", "insufficient", "none")

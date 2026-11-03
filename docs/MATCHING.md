@@ -104,6 +104,8 @@ Access is by link: `https://…/#key=…`. The page sends the key only to two da
 .venv/bin/python -m src.matching.cloud --dotenv revoke-key advisor        # the link stops working
 ```
 
+Email drafts list every lawyer named in the complaint with a checkbox. Their addresses are found by code, not by the model ([profiles.py](../src/matching/profiles.py) `add_emails`): every address in the complaint is listed, and a lawyer gets the one whose user name contains their surname, preferring one that starts with their first initial, because signature blocks often list the addresses apart from the names. Lawyers for the party the draft is written for are checked; addresses no lawyer claims are offered unchecked under "Other addresses found in the complaint"; the user can add more. "Open in Gmail" opens a new message in the user's own Gmail with the chosen recipients, subject and text (Gmail adds their signature); "Open in Mail app" does the same with a `mailto:` link; nothing is sent automatically. On five complaints checked by hand, all 14 lawyers got the right address. Checks saved before this got their addresses with `python -m src.matching.cloud --dotenv add-emails` (re-reads the complaint PDFs from public storage; no model call).
+
 [pages.yml](../.github/workflows/pages.yml) publishes `site/` on every push to main that changes it, writing `config.js` from the repository variables `SUPABASE_URL` and `SUPABASE_ANON_KEY` (the publishable key; the job refuses a secret key). The manifest has no `start_url`, so a home-screen icon opens the link it was added from, key included.
 
 - Sample CVs: put PDFs in `data/matching/cvs/` (the two public CVs used so far are there locally).

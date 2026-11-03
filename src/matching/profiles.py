@@ -4,6 +4,11 @@ Every experience item, issue, expertise area and counsel entry carries a quote a
 A claim is kept only when its quote is found in the source (on the cited page, or once
 elsewhere, as in src.llm.document). Kept claims get ids (E1, I1, X1) that the match step
 must reference, so every reason shown traces back to verified source text.
+
+Lawyers' email addresses are found by code, not by the model: every address in the document is
+listed, and a lawyer gets the one whose user name contains their surname (preferring one that
+starts with their first initial), since signature blocks often list the addresses apart from the
+names. Addresses no lawyer claims are kept as "emails", for a person to choose from.
 """
 import json
 import re
@@ -16,6 +21,8 @@ DOMAINS = ("Gaming & Gambling", "Cybersecurity & Forensics", "Software & Interne
 KINDS = ("role", "project", "patent", "publication", "testimony", "certification", "education", "skill", "award")
 BASES = ("stated", "inferred")
 UNNAMED = "Unnamed expert"
+EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}")
+NAME_SUFFIXES = {"jr", "sr", "ii", "iii", "iv", "esq"}
 
 
 # Bullet glyphs (often private-use characters from symbol fonts) sit between list items in
@@ -134,3 +141,38 @@ def verify_case(parsed, pages):
     counsel = [{k: v for k, v in c.items() if k != "id"} for c in verify(parsed["counsel"], source, "counsel", "C", dropped)]
     return {**parsed, "issues": verify(parsed["issues"], source, "issues", "I", dropped),
             "expertise": verify(parsed["expertise"], source, "expertise", "X", dropped), "counsel": counsel}, dropped
+
+
+def letters(value):
+    return re.sub(r"[^a-z]", "", value.lower())
+
+
+def emails_in(pages):
+    """Distinct addresses in document order, each with the first page it appears on."""
+    seen = {}
+    for number, page in enumerate(pages, 1):
+        for match in EMAIL.finditer(page):
+            seen.setdefault(match.group().lower(), number)
+    return [{"email": address, "page": page} for address, page in seen.items()]
+
+
+def counsel_email(name, emails):
+    words = [w for w in (letters(part) for part in name.split()) if w and w not in NAME_SUFFIXES]
+    if not words or len(words[-1]) < 3:
+        return None
+    first, last = words[0], words[-1]
+    hits = [e for e in emails if last in letters(e["email"].split("@")[0])]
+    hits.sort(key=lambda e: not letters(e["email"].split("@")[0]).startswith(first[0]))
+    return hits[0] if hits else None
+
+
+def add_emails(profile, pages):
+    """Each counsel entry gets "email" and "email_page" (None when not found); the profile gets
+    "emails": the other addresses in the document (at most 20)."""
+    emails, used, counsel = emails_in(pages), set(), []
+    for c in profile["counsel"]:
+        hit = counsel_email(c["name"], emails)
+        if hit:
+            used.add(hit["email"])
+        counsel.append({**c, "email": hit and hit["email"], "email_page": hit and hit["page"]})
+    return {**profile, "counsel": counsel, "emails": [e for e in emails if e["email"] not in used][:20]}

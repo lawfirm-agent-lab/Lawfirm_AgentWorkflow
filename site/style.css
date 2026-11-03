@@ -89,3 +89,14 @@ textarea { min-height: 260px; resize: vertical; }
 }
 .btn.light { background: var(--quote); color: var(--ink); }
 .notice { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 20px; margin-top: 24px; }
+.picks { border: 1px solid var(--line); border-radius: 10px; margin-top: 4px; overflow: hidden; }
+.pick {
+  display: flex; gap: 10px; align-items: flex-start; margin: 0; padding: 10px 12px; font-size: 15px; font-weight: 400;
+  color: var(--ink); border-top: 1px solid var(--line); cursor: pointer;
+}
+.pick:first-child { border-top: 0; }
+.pick input { width: 20px; height: 20px; margin: 2px 0 0; flex: none; accent-color: var(--head); }
+.pick > span { display: flex; flex-direction: column; min-width: 0; }
+.pick .addr { overflow-wrap: anywhere; color: var(--blue); }
+.pick:has(input:disabled) { opacity: .6; cursor: default; }
+.picks .sub { padding: 8px 12px 4px; border-top: 1px solid var(--line); background: var(--bg); }

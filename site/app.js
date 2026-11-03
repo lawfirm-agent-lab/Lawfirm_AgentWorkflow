@@ -186,30 +186,55 @@ function reasons(match, doc) {
       side(`${doc} ${m.point.id} · p. ${m.point.page}`, m.point.quote, m.point.issue || m.point.area))));
 }
 
+// Recipients: every lawyer named in the complaint, with the address code found for them, checked
+// when they represent the party the draft is for; other addresses in the complaint unchecked;
+// and any address the user adds. Sending happens in the user's own mail (Gmail or the phone's app),
+// which adds their signature.
+function recipientRow(address, label, note, checked) {
+  const box = h("input", { type: "checkbox", value: address || "", checked: checked && Boolean(address), disabled: !address });
+  return h("label", { class: "pick" }, box, h("span", {}, h("b", {}, label), address ? h("span", { class: "addr" }, address) : null,
+    note ? h("span", { class: "muted small" }, note) : null));
+}
+
 function emailBox(match, profile) {
   const mail = match.email;
   if (!mail) return h("p", { class: "muted" }, "No draft: drafts are written for High and Medium matches only.");
-  const counsel = (profile.counsel || []).filter((c) => !mail.to_party || c.party === mail.to_party).slice(0, 4);
+  const counsel = profile.counsel || [];
+  const others = profile.emails || [];
+  const list = h("div", { class: "picks" },
+    counsel.map((c) => recipientRow(c.email, c.name,
+      meta(c.firm, c.party && `for ${c.party}`, c.email ? `p. ${c.email_page}` : "no address in the complaint"),
+      !mail.to_party || c.party === mail.to_party)),
+    others.length ? h("div", { class: "muted small sub" }, "Other addresses found in the complaint") : null,
+    others.map((x) => recipientRow(x.email, x.email.split("@")[0], `p. ${x.page}`, false)));
+  const added = h("input", { type: "email", placeholder: "Add an address (optional)", autocomplete: "email" });
   const subject = h("input", { value: mail.subject });
   const body = h("textarea", {}, mail.body);
   const status = h("span", { class: "muted small" });
-  const open = (base) => () => {
-    const q = `subject=${encodeURIComponent(subject.value)}&body=${encodeURIComponent(body.value)}`;
-    window.open(base === "gmail" ? `https://mail.google.com/mail/?view=cm&fs=1&su=${encodeURIComponent(subject.value)}&body=${encodeURIComponent(body.value)}` : `mailto:?${q}`, "_blank");
+  const recipients = () => {
+    const chosen = [...list.querySelectorAll("input:checked")].map((b) => b.value);
+    for (const a of added.value.split(/[\s,;]+/)) if (/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(a)) chosen.push(a);
+    return [...new Set(chosen)];
   };
+  const enc = encodeURIComponent;
+  const gmail = () => window.open(`https://mail.google.com/mail/?view=cm&fs=1&to=${enc(recipients().join(","))}` +
+    `&su=${enc(subject.value)}&body=${enc(body.value)}`, "_blank", "noopener");
+  const mailApp = () => { location.href = `mailto:${recipients().map(enc).join(",")}?subject=${enc(subject.value)}&body=${enc(body.value)}`; };
   const copy = async () => {
-    try { await navigator.clipboard.writeText(`Subject: ${subject.value}\n\n${body.value}`); status.textContent = "Copied."; }
-    catch (e) { status.textContent = "Copy failed; select the text instead."; }
+    try {
+      await navigator.clipboard.writeText(`To: ${recipients().join(", ")}\nSubject: ${subject.value}\n\n${body.value}`);
+      status.textContent = "Copied.";
+    } catch (e) { status.textContent = "Copy failed; select the text instead."; }
   };
   return h("div", {},
-    h("p", { class: "small" }, h("b", {}, "To: "), counsel.length ? counsel.map((c) => `${c.name}${c.firm ? `, ${c.firm}` : ""}`).join("; ") : "counsel of record",
-      mail.to_party ? h("span", { class: "muted" }, ` (for ${mail.to_party})`) : null),
-    h("p", { class: "muted small" }, "Lawyers' email addresses are not filled in yet. Edit the draft here, then open it in your email app; nothing is sent automatically."),
+    h("label", {}, `To${mail.to_party ? ` (draft written for ${mail.to_party})` : ""}`), list, added,
+    h("p", { class: "muted small" }, "Addresses come from the complaint's signature block. Check them before sending; nothing is sent automatically."),
     h("label", {}, "Subject"), subject, h("label", {}, "Message"), body,
     h("div", { class: "buttons" },
-      h("button", { class: "btn", type: "button", onclick: open("gmail") }, "Open in Gmail"),
-      h("button", { class: "btn light", type: "button", onclick: open("mail") }, "Open in Mail app"),
-      h("button", { class: "btn light", type: "button", onclick: copy }, "Copy"), status));
+      h("button", { class: "btn", type: "button", onclick: gmail }, "Open in Gmail"),
+      h("button", { class: "btn light", type: "button", onclick: mailApp }, "Open in Mail app"),
+      h("button", { class: "btn light", type: "button", onclick: copy }, "Copy"), status),
+    h("p", { class: "muted small" }, "Gmail opens signed in as you, with your signature added."));
 }
 
 async function casePage(id, index) {
@@ -241,7 +266,9 @@ async function casePage(id, index) {
     profile && profile.expertise.length ? h("div", { class: "section" }, h("h2", {}, "Expertise the case needs"),
       h("ul", {}, profile.expertise.map((x) => h("li", {}, h("b", {}, x.area), `: ${x.why}`, h("span", { class: "muted" }, ` (${x.id}, p. ${x.page})`))))) : null,
     profile && profile.counsel.length ? h("div", { class: "section" }, h("h2", {}, "Counsel"),
-      h("ul", {}, profile.counsel.map((x) => h("li", {}, h("b", {}, x.name), x.firm ? `, ${x.firm}` : "", h("span", { class: "muted" }, ` for ${x.party} (p. ${x.page})`))))) : null,
+      h("ul", {}, profile.counsel.map((x) => h("li", {}, h("b", {}, x.name), x.firm ? `, ${x.firm}` : "",
+        x.email ? h("span", {}, " · ", h("a", { href: `mailto:${x.email}` }, x.email)) : null,
+        h("span", { class: "muted" }, ` for ${x.party} (p. ${x.page})`))))) : null,
     h("div", { class: "section" }, h("h2", {}, "Email draft"), emailBox(match, profile || {})),
     h("p", { class: "muted small section" }, "Summaries and reasons are written by AI. Every quote shown was checked against the CV or the complaint."));
 }
