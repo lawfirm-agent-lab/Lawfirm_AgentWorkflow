@@ -11,6 +11,9 @@ case pool.
 
 The status file is rewritten after every step, so the progress page and the run history
 read it from disk and survive a server restart (an interrupted run shows as failed).
+
+With cloud (src.matching.cloud.CloudRuns), each finished daily check is also saved to the cloud
+database; a failed save is noted in status.json as cloud_error.
 """
 import json
 import secrets
@@ -21,6 +24,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from src.llm.client import LLMError
+from src.store.db import StoreError
 from src.matching.run import Model, make_search, run
 
 RUN_ID = r"\d{8}-\d{6}-[0-9a-f]{6}"
@@ -37,9 +41,10 @@ def write_json(path, data):
 
 
 class Jobs:
-    def __init__(self, root, settings, cases, base, limit, data_dir, env, keep=6):
+    def __init__(self, root, settings, cases, base, limit, data_dir, env, keep=6, cloud=None, ledger=None):
         self.root, self.settings, self.cases, self.base, self.limit = root, settings, cases, base, limit
         self.data_dir, self.env, self.keep = data_dir, env, keep
+        self.cloud, self.ledger = cloud, ledger  # ledger: CourtListener request ledger store (see make_search)
         self.lock = threading.Lock()
         self.active = None
         root.mkdir(parents=True, exist_ok=True)
@@ -123,7 +128,7 @@ class Jobs:
             write_json(folder / "status.json", status)
             model = Model(self.settings, self.data_dir / "cache")
             daily = status.get("daily")
-            search = make_search(self.env, self.data_dir, status.get("days", 365)) if status.get("find") else None
+            search = make_search(self.env, self.data_dir, status.get("days", 365), self.ledger) if status.get("find") else None
             experts = run(model, [folder / "cv.pdf"], [] if daily else self.cases, self.base, self.limit, log, search,
                           self.keep, self.data_dir / "pdfs", cv_name=status["cv"],
                           skip=self.shown(status["cv"]) if daily else ())
@@ -139,6 +144,12 @@ class Jobs:
                 write_json(folder / "trace.json", model.trace)
             status["finished"] = now()
             write_json(folder / "status.json", status)
+            if self.cloud is not None and status.get("daily"):
+                try:
+                    self.cloud.save_run(folder)
+                except StoreError as exc:
+                    status["cloud_error"] = str(exc)
+                    write_json(folder / "status.json", status)
             self.active = None
 
     def trace(self, run_id):

@@ -4,6 +4,7 @@
 <nav><a href="{{ url_for('index') }}">← Home</a></nav>
 <h1>New cases by day</h1>
 <div class="muted">Each daily check searches complaints filed in a recent window for one saved CV, skips cases earlier checks already showed, and reads and matches the relevant ones. About half of new complaints have no PDF on CourtListener yet; those are screened on the case name and docket text, and the possibly relevant ones are listed with the cost of buying the complaint. "Filed" is the date the complaint was filed in court; "Checked" is when this system found it.</div>
+{% if cloud %}<div class="muted small">{% if cloud_error %}<span class="warn">Cloud database not reachable: {{ cloud_error }}</span> Showing the checks on this computer.{% else %}Includes the scheduled checks from the cloud{% if synced %} ({{ synced }} new copied just now){% endif %}.{% endif %}</div>{% endif %}
 {% if busy %}<div class="card run">A run is in progress; refresh when it finishes.</div>{% endif %}
 {% for day, checks in days %}
   <h2>Checked {{ day }}</h2>

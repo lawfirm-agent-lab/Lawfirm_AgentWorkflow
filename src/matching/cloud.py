@@ -1,0 +1,169 @@
+"""Cloud copy of saved CVs and daily checks, in the pipeline's database (Supabase PostgreSQL).
+
+The scheduled job (.github/workflows/daily-matching.yml) runs `python -m src.web.daily --cloud`:
+it copies the saved CVs and earlier daily checks from the database into its empty run folder, runs
+each CV's daily check, and saves every new check back. The local web app started with --cloud does
+the reverse: it copies the cloud checks into data/matching/runs, so they show on the "New cases by
+day" page, and saves CVs uploaded with "save this CV" to the cloud too.
+
+python -m src.matching.cloud --dotenv upload data/matching/cvs/Jane_Doe.pdf   save a CV for daily checks
+python -m src.matching.cloud --dotenv list                                    saved CVs and recent checks
+python -m src.matching.cloud --dotenv pull                                    copy cloud checks to this computer
+
+Each command reads DATABASE_URL (TLS required) and never prints it; --sqlite PATH uses a local
+file instead, for trying it out.
+"""
+import argparse
+import base64
+import hashlib
+import json
+import os
+import sys
+import threading
+from contextlib import contextmanager
+from pathlib import Path
+
+from src.core.config import ConfigError, secure_database_url
+from src.store.db import StoreError, now
+from src.store.pipeline import PipelineStore
+
+RUN_FILES = (("status_json", "status.json"), ("result_json", "result.json"), ("trace_json", "trace.json"))
+
+
+def open_store(env, sqlite=None):
+    """The pipeline database; creating it applies the migrations, including the matching tables."""
+    if sqlite:
+        return PipelineStore(str(sqlite))
+    return PipelineStore(database_url=secure_database_url(env.get("DATABASE_URL")))
+
+
+class CloudRuns:
+    """store: one open store, for a single-threaded command. connect: opens a store per call, for
+    the web server (several threads, and a long idle time that can drop a kept connection)."""
+
+    def __init__(self, store=None, connect=None):
+        self.store, self.connect = store, connect
+        self.lock = threading.Lock()
+
+    @contextmanager
+    def session(self):
+        if self.connect is None:
+            with self.lock:
+                yield self.store
+            return
+        store = self.connect()
+        try:
+            yield store
+        finally:
+            store.close()
+
+    def save_cv(self, name, data):
+        with self.session() as store, store.transaction():
+            store.execute(
+                "INSERT INTO matching_cvs VALUES (?,?,?,1,?) ON CONFLICT (name) DO UPDATE SET "
+                "pdf_base64=excluded.pdf_base64, sha256=excluded.sha256, active=1, saved_at=excluded.saved_at",
+                (name, base64.b64encode(data).decode("ascii"), hashlib.sha256(data).hexdigest(), now()))
+
+    def cvs(self):
+        """Active saved CVs as (name, PDF bytes), by name."""
+        with self.session() as store:
+            rows = store.execute("SELECT name, pdf_base64 FROM matching_cvs WHERE active=1 ORDER BY name").fetchall()
+        return [(r["name"], base64.b64decode(r["pdf_base64"])) for r in rows]
+
+    def write_cvs(self, directory):
+        """Copy the saved CVs into directory; returns their file names."""
+        directory.mkdir(parents=True, exist_ok=True)
+        names = []
+        for name, data in self.cvs():
+            if Path(name).name != name:  # Names come from the database: never write outside directory.
+                continue
+            (directory / name).write_bytes(data)
+            names.append(name)
+        return names
+
+    def save_run(self, folder):
+        """Save a finished run folder (status, result and trace). Saving it again replaces it."""
+        files = {}
+        for column, file_name in RUN_FILES:
+            path = folder / file_name
+            files[column] = path.read_text(encoding="utf-8") if path.exists() else None
+        status = json.loads(files["status_json"])
+        with self.session() as store, store.transaction():
+            store.execute(
+                "INSERT INTO matching_runs VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT (run_id) DO UPDATE SET "
+                "state=excluded.state, finished_at=excluded.finished_at, status_json=excluded.status_json, "
+                "result_json=excluded.result_json, trace_json=excluded.trace_json, saved_at=excluded.saved_at",
+                (folder.name, status["cv"], status["state"], status["started"], status.get("finished"),
+                 files["status_json"], files["result_json"], files["trace_json"], now()))
+
+    def runs(self, limit=20):
+        with self.session() as store:
+            return store.execute("SELECT run_id, cv_name, state, started_at, finished_at FROM matching_runs "
+                                 "ORDER BY started_at DESC LIMIT ?", (limit,)).fetchall()
+
+    def pull(self, root):
+        """Copy cloud runs that root does not have yet; returns how many were copied."""
+        root.mkdir(parents=True, exist_ok=True)
+        have = {p.name for p in root.iterdir() if (p / "status.json").exists()}
+        copied = 0
+        with self.session() as store:
+            ids = [r["run_id"] for r in store.execute("SELECT run_id FROM matching_runs").fetchall()]
+            for run_id in ids:
+                if run_id in have or Path(run_id).name != run_id:
+                    continue
+                row = store.execute("SELECT * FROM matching_runs WHERE run_id=?", (run_id,)).fetchone()
+                folder = root / run_id
+                folder.mkdir(exist_ok=True)
+                # status.json last: a folder counts as a run only once it is complete.
+                for column, file_name in RUN_FILES[::-1]:
+                    if row[column] is not None:
+                        (folder / file_name).write_text(row[column], encoding="utf-8")
+                copied += 1
+        return copied
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--dotenv", action="store_true", help="Load DATABASE_URL from the local .env")
+    parser.add_argument("--sqlite", type=Path, help="Use a local SQLite file instead of DATABASE_URL")
+    commands = parser.add_subparsers(dest="command", required=True)
+    upload = commands.add_parser("upload", help="Save a CV PDF for daily checks")
+    upload.add_argument("pdf", type=Path)
+    commands.add_parser("list", help="Saved CVs and recent daily checks")
+    commands.add_parser("pull", help="Copy cloud daily checks into data/matching/runs")
+    args = parser.parse_args(argv)
+    from src.matching.run import ROOT
+    if args.dotenv:
+        from dotenv import load_dotenv
+        load_dotenv(ROOT / ".env")
+    try:
+        store = open_store(os.environ, args.sqlite)
+    except (ConfigError, StoreError) as exc:
+        print(f"Database: {exc}")
+        return 1
+    cloud = CloudRuns(store)
+    try:
+        if args.command == "upload":
+            data = args.pdf.read_bytes()
+            if data[:1024].find(b"%PDF-") < 0:
+                print(f"{args.pdf} is not a PDF")
+                return 1
+            cloud.save_cv(args.pdf.name, data)
+            print(f"Saved {args.pdf.name} ({len(data) // 1024} KB); daily checks will include it.")
+        elif args.command == "list":
+            for name, data in cloud.cvs():
+                print(f"CV  {name} ({len(data) // 1024} KB)")
+            for r in cloud.runs():
+                print(f"run {r['run_id']}  {r['cv_name']}  {r['state']}  {r['started_at']}")
+        else:
+            print(f"Copied {cloud.pull(ROOT / 'data' / 'matching' / 'runs')} new daily checks from the cloud.")
+    except StoreError as exc:
+        print(f"Database: {exc}")
+        return 1
+    finally:
+        store.close()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

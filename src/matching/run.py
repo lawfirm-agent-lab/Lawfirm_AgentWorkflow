@@ -35,6 +35,7 @@ STORAGE = "https://storage.courtlistener.com/"
 MIN_CASE_CHARS = 2000
 CASE_PAGES = 150
 LOCAL_LIMITS = Limits(per_day=30, headroom_per_day=0, headroom_per_hour=0, max_requests_per_run=6)
+CLOUD_LIMITS = Limits(max_requests_per_run=6)  # Account limits less the pipeline's headroom, 6 per CV.
 
 
 class Model:
@@ -298,9 +299,12 @@ def run(model, cv_paths, cases, base, limit, log=print, search=None, keep=6, pdf
     return experts
 
 
-def make_search(env, data_dir, days=365):
+def make_search(env, data_dir, days=365, ledger=None):
     """A CourtListener search client with its own request ledger. Local runs are capped at
-    LOCAL_LIMITS because the cloud pipeline uses the same account (125 requests a day)."""
+    LOCAL_LIMITS because the cloud pipeline uses the same account (125 requests a day).
+
+    ledger: the cloud database's store. The scheduled cloud check shares the docket pipeline's
+    ledger there, so together they stay under the account's limits (CLOUD_LIMITS)."""
     import requests
 
     from src.core.ratelimit import RequestBudget
@@ -312,7 +316,10 @@ def make_search(env, data_dir, days=365):
     session = requests.Session()
     session.headers.update({"Authorization": "Token " + token, "Accept": "application/json"})
     data_dir.mkdir(parents=True, exist_ok=True)
-    budget = RequestBudget(PipelineStore(str(data_dir / "courtlistener.db")), LOCAL_LIMITS)
+    if ledger is not None:
+        budget = RequestBudget(ledger, CLOUD_LIMITS)
+    else:
+        budget = RequestBudget(PipelineStore(str(data_dir / "courtlistener.db")), LOCAL_LIMITS)
     return discover.CourtListenerSearch(session, budget, data_dir / "search", days)
 
 

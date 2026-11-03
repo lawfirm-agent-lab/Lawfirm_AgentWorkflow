@@ -140,7 +140,7 @@ class CourtListenerSearch:
             cached = True
         else:
             if not self.budget.acquire():
-                raise DiscoveryError("CourtListener request budget for local runs is used up for now")
+                raise DiscoveryError("CourtListener request budget is used up for now")
             try:
                 response = self.session.get(SEARCH, params=params, timeout=(10, 30), allow_redirects=False)
             except OSError as exc:  # requests' timeouts and connection errors

@@ -55,6 +55,11 @@ Every experience item, issue, expertise area and counsel entry must quote its so
 
 # Daily check for every saved CV (or --cv NAME), same runs as the web app's "Check new cases"
 .venv/bin/python -m src.web.daily --dotenv --days 1
+
+# Cloud (see "Daily checks in the cloud"): save a CV there, list, copy the cloud checks here
+.venv/bin/python -m src.matching.cloud --dotenv upload data/matching/cvs/matt_linton_CV.pdf
+.venv/bin/python -m src.matching.cloud --dotenv list
+.venv/bin/python -m src.web --dotenv --cloud    # the web app, showing the cloud checks too
 ```
 
 ### Daily checks
@@ -67,9 +72,25 @@ The goal is to see, each day, the new cases relevant to an expert. A daily check
 
 Uploaded CVs can be saved to `data/matching/cvs/` ("Save this CV for daily checks"); daily checks run for saved CVs. The **New cases by day** page (`/today`) lists the checks by the day they ran: complaints found, screened out, and the cases read and matched with their tier and score. "Filed" is the court filing date; "Checked" is when the system found the case.
 
-Daily checks are started by hand (web button or the command above). Running them on a schedule in the cloud is the next step.
+Daily checks can be started by hand (web button or the command above) or run on a schedule in the cloud (next section).
 
 First real check (2026-10-30, Mark C. Nicely, filed since 2026-10-29): 3 searches → 4 complaints with a PDF → none relevant (two generic e-commerce patent suits, a genetic-testing patent case, a county ordinance case). Second check (Matt Linton, same window, searches now include complaints without a PDF): 4 complaints → 2 read in full, both Medium (Google LLC v. Does 1–8, credential phishing; Quectel v. Telit, remote access to IoT modules). All 4 had a PDF: keyword search rarely finds complaints without one, because only their one-line docket text is searchable. See [PDF_ACCESS.md](PDF_ACCESS.md) for the measured share, ways to get them, cost and the proposed daily listing.
+
+### Daily checks in the cloud
+
+The cloud and this computer share one database: the pipeline's Supabase PostgreSQL (`DATABASE_URL`). Migration [005_matching.sql](../sql/migrations/005_matching.sql) adds two tables, created by the next pipeline or matching run that opens the database:
+
+- `matching_cvs`: CVs saved for daily checks (the PDF as base64).
+- `matching_runs`: finished daily checks, each the run folder's `status.json`, `result.json` and `trace.json`.
+
+The scheduled job [daily-matching.yml](../.github/workflows/daily-matching.yml) runs every day at 11:30 UTC (and by hand with a chosen window): `python -m src.web.daily --cloud --days 2`. It copies the saved CVs and earlier checks from the database, runs each CV's daily check, and saves every check back. Earlier checks decide which cases are left out as already shown, so a 2-day window covers a skipped scheduled run without showing a case twice. Its CourtListener requests count against the pipeline's ledger in the database (`api_requests`), so the docket monitor and the matching job together stay under the account's limits (100 a day after headroom; at most 6 per CV).
+
+This computer connects with `--cloud` ([src/matching/cloud.py](../src/matching/cloud.py)):
+
+- `python -m src.web --dotenv --cloud`: the **New cases by day** page first copies the cloud checks it does not have yet. A CV saved with "Save this CV for daily checks" is also saved to the cloud, and a daily check run here is saved there too (with the local 30-a-day ledger).
+- `python -m src.matching.cloud upload|list|pull`: save a CV for the scheduled job, list saved CVs and recent checks, copy the cloud checks.
+
+The job needs these repository settings: secrets `DATABASE_URL`, `COURTLISTENER_TOKEN`, `LLM_API_KEY`; variables `LLM_PROVIDER`, `LLM_BASE_URL`, `LLM_MODEL` (and optionally `LLM_EXTRA_BODY`). With no CV saved in the cloud, the job fails with "No saved CV in the cloud database". The LLM cache is not kept between cloud runs, so each daily check calls the model for everything it reads.
 
 - Sample CVs: put PDFs in `data/matching/cvs/` (the two public CVs used so far are there locally).
 - Fixed case pool: [eval/matching_cases.json](../eval/matching_cases.json) (saved CourtListener entries or a local PDF per case).

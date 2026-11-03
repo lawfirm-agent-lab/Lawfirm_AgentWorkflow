@@ -1,6 +1,8 @@
 """Local web app for expert-case matching: pick or upload a CV, watch the pipeline, read the results.
 
 Runs on 127.0.0.1 only. The LLM key stays in the server's environment and never reaches a page.
+With cloud (src.matching.cloud.CloudRuns), the "New cases by day" page first copies the cloud's
+daily checks, and CVs saved here and daily checks run here are saved to the cloud too.
 """
 import json
 import re
@@ -18,6 +20,7 @@ from src.llm.config import LLMSettings
 from src.matching.match import LABELS
 from src.matching.report import render
 from src.matching.run import LOCAL_LIMITS, ROOT, case_status
+from src.store.db import StoreError
 from src.store.pipeline import PipelineStore
 from src.web.jobs import RUN_ID, Jobs
 
@@ -76,7 +79,7 @@ def daily_view(jobs):
 
 
 def create_app(env, data_dir=ROOT / "data" / "matching", cases_file=ROOT / "eval" / "matching_cases.json",
-               limit=160000):
+               limit=160000, cloud=None):
     app = Flask(__name__)
     app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD
     samples_dir = data_dir / "cvs"
@@ -86,7 +89,7 @@ def create_app(env, data_dir=ROOT / "data" / "matching", cases_file=ROOT / "eval
         settings, config_error = LLMSettings.from_env(env), None
     except ConfigError as exc:
         settings, config_error = None, str(exc)
-    jobs = Jobs(data_dir / "runs", settings, cases, ROOT, limit, data_dir, env)
+    jobs = Jobs(data_dir / "runs", settings, cases, ROOT, limit, data_dir, env, cloud=cloud)
     has_token = bool((env.get("COURTLISTENER_TOKEN") or "").strip())
 
     def samples():
@@ -132,6 +135,11 @@ def create_app(env, data_dir=ROOT / "data" / "matching", cases_file=ROOT / "eval
                 name += ".pdf"
                 if request.form.get("keep") == "on":  # Saved CVs are the ones daily checks can run for.
                     shutil.copyfile(path, samples_dir / name)
+                    if cloud is not None:
+                        try:
+                            cloud.save_cv(name, path.read_bytes())
+                        except StoreError as exc:
+                            return redirect(url_for("index", error=f"The CV was not saved to the cloud: {exc}"))
             elif sample in samples():
                 path, name = samples_dir / sample, sample
             else:
@@ -155,7 +163,14 @@ def create_app(env, data_dir=ROOT / "data" / "matching", cases_file=ROOT / "eval
 
     @app.get("/today")
     def today():
-        return render_template("today.html", days=daily_view(jobs), busy=jobs.busy())
+        synced, cloud_error = None, None
+        if cloud is not None:
+            try:
+                synced = cloud.pull(jobs.root)
+            except StoreError as exc:
+                cloud_error = str(exc)
+        return render_template("today.html", days=daily_view(jobs), busy=jobs.busy(), cloud=cloud is not None,
+                               synced=synced, cloud_error=cloud_error)
 
     @app.get("/runs/<run_id>")
     def progress(run_id):
