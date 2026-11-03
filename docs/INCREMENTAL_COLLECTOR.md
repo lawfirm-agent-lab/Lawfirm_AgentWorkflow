@@ -79,3 +79,22 @@ Inspect the JSON report: requests <= 4; partial/pause is not full synchronizatio
 - Validation: 87 local unit tests passed; 14 tests passed on disposable local PostgreSQL 16, including 5 event tests for deduplication, immutable versions, resource identity and rollback. Container removed afterward.
 - Primary agent performed these checks; independent QA remains pending. No cloud writes, real API requests, or SMTP delivery occurred.
 - Enrichment, screening, email rendering and delivery remain unimplemented for discovery events. No commit or deployment yet.
+
+## Consolidated cloud acceptance — 2026-10-22
+
+Owner supplied three cloud run reports: 1edfa12b13c84a6a87bd780e2fd0afb5 (40 changed), a41edf9056cd4524a33f4cc69435cd24 (60 changed), edb9eb229b6a4955975225c55cf85e7c (40 changed). Each used four requests and saved three pages with partial status. Opinion checkpoint advanced from 07:40:16 to 07:55:16 UTC; docket checkpoint retained an unfinished window. Earlier two runs preceded event-feature deployment according to owner.
+
+Added sql/verify_discovery.sql for one consolidated SELECT, returning only counts and checkpoints. Expected: records > 0, events > 0 after event-enabled collection, duplicate/orphan counts 0, named completed runs 3, and increasing checkpoint revisions. Exact counts are not assumed: changed-record counts are not necessarily distinct IDs. No backfill of pre-feature events is expected. This checks durable state, not upstream full coverage or replay behavior; replay/rollback tests previously passed locally. Cloud query execution and its result remain pending. No database access was performed by the assistant.
+
+## Cloud basic persistence acceptance — PASSED — 2026-10-22
+
+Evidence: owner-provided Supabase SQL results and screenshot at 01:12 PDT.
+
+| Stream | Checkpoint revision | Saved records | Saved events | Pending page |
+| --- | ---: | ---: | ---: | --- |
+| docket-entries | 7 | 140 | 40 | true |
+| opinions | 2 | 0 | 0 | false |
+
+The owner separately reported duplicate_event_versions = 0. Docket progress remains at 2026-10-22T07:25:16.763818+00:00 with an unfinished window; opinion progress advanced to 2026-10-22T07:55:16.763818+00:00. Nine total page revisions agree with the three run reports (three pages each). The 40 events are consistent with enabling event persistence only before the third run; the preceding 100 records were not backfilled.
+
+Decision: Step 1 basic cloud collection/persistence acceptance is complete. Cross-run durable checkpoints, nonempty metadata/event storage and absence of duplicate event versions in the inspected state are evidenced. This is not an exhaustive cloud replay/rollback test or independent QA sign-off. Docket backlog remains; empty opinion results do not validate nonempty opinion processing. Full-site completeness and sustainable throughput remain unproven. Next: enrichment, screening and notification integration.
