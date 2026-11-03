@@ -25,7 +25,7 @@ from src.llm.client import LLMError, create_client
 from src.llm.config import PROFILES, LLMSettings, profile_env
 from src.llm.document import MARKER, pages_from_extraction, pages_from_plain_text
 from src.llm.output import InvalidOutput
-from src.matching import discover, profiles
+from src.matching import discover, elsewhere, profiles
 from src.matching import match as matching
 from src.matching.report import render
 
@@ -230,6 +230,8 @@ def find_cases(model, search, expert, keep, pdf_dir, log, per_search=8, skip=())
     relevant = [c for c in candidates if c["screen"]["relevant"]]
     kept = discover.diverse([c for c in relevant if c["has_pdf"]], keep)
     wanted = [c for c in relevant if not c["has_pdf"]]
+    for case in wanted:  # The search agent's slot: other websites that may have the complaint.
+        case["elsewhere"] = elsewhere.find(case)
     step(log, "screen", "Screening", model, before,
          f"{len(relevant)} of {len(candidates)} candidates look relevant, {len(kept)} kept for full reading"
          + (f", {len(wanted)} without a complaint PDF worth getting" if wanted else ""), total_hint=len(kept))
@@ -238,7 +240,7 @@ def find_cases(model, search, expert, keep, pdf_dir, log, per_search=8, skip=())
     record = {"searches": searches, "days": search.days, "since": search.since().isoformat(), "skipped": skipped,
               "candidates": [{k: c.get(k) for k in ("name", "court", "filed", "url", "found_by", "screen", "kept",
                                                     "download_error", "docket_number", "has_pdf", "page_count",
-                                                    "pacer_doc_id", "cost", "description")} for c in found],
+                                                    "pacer_doc_id", "cost", "description", "elsewhere")} for c in found],
               "cost": round(sum(c["cost"] for c in wanted), 2)}
     cases = [{k: c[k] for k in ("name", "court", "filed", "url", "document_label", "document_url", "pdf", "docket_number",
                                 "found_by")} for c in kept]

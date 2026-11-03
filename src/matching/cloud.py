@@ -12,6 +12,7 @@ python -m src.matching.cloud --dotenv pull                                    co
 python -m src.matching.cloud --dotenv new-key --label advisor                 make a link to the results website
 python -m src.matching.cloud --dotenv keys | revoke-key advisor               list or turn off website links
 python -m src.matching.cloud --dotenv add-emails                              add lawyers' addresses to older checks
+python -m src.matching.cloud --dotenv set-dispatch-token                      let uploads start cloud runs (Vault)
 
 The results website (site/, on GitHub Pages) reads the daily checks through database functions
 that check an access key (migration 007). Only the key's SHA-256 is stored; new-key prints the
@@ -149,6 +150,28 @@ class CloudRuns:
                 changed += 1
         return changed
 
+    def request(self, request_id):
+        """An upload from the website (migration 008), or None."""
+        with self.session() as store:
+            return store.execute("SELECT * FROM matching_requests WHERE request_id=?", (request_id,)).fetchone()
+
+    def update_request(self, request_id, **fields):
+        """Set state, progress, run_id, error or pdf_base64 on a request (updated_at too)."""
+        names = sorted(fields)
+        assert set(names) <= {"state", "progress", "run_id", "error", "pdf_base64"}
+        with self.session() as store, store.transaction():
+            store.execute(f"UPDATE matching_requests SET {', '.join(f'{n}=?' for n in names)}, updated_at=? WHERE request_id=?",
+                          (*[fields[n] for n in names], now(), request_id))
+
+    def set_dispatch_token(self, token):
+        """Keep the GitHub token that starts runs for uploads in Supabase Vault (PostgreSQL only)."""
+        with self.session() as store, store.transaction():
+            row = store.execute("SELECT id FROM vault.secrets WHERE name='matching_github_token'").fetchone()
+            if row:
+                store.execute("SELECT vault.update_secret(?, ?)", (row["id"], token))
+            else:
+                store.execute("SELECT vault.create_secret(?, 'matching_github_token')", (token,))
+
     def runs(self, limit=20):
         with self.session() as store:
             return store.execute("SELECT run_id, cv_name, state, started_at, finished_at FROM matching_runs "
@@ -221,6 +244,7 @@ def main(argv=None):
     revoke = commands.add_parser("revoke-key", help="Turn off the website links with this label")
     revoke.add_argument("label")
     commands.add_parser("add-emails", help="Add lawyers' email addresses to checks saved before they were found")
+    commands.add_parser("set-dispatch-token", help="Store GITHUB_DISPATCH_TOKEN in Supabase Vault (never printed)")
     args = parser.parse_args(argv)
     from src.matching.run import ROOT
     if args.dotenv:
@@ -254,6 +278,13 @@ def main(argv=None):
                 print(f"{r['label']}  {'active' if r['active'] else 'revoked'}  {r['created_at']}")
         elif args.command == "add-emails":
             print(f"Added lawyers' addresses to {cloud.add_emails(document_pages())} saved checks.")
+        elif args.command == "set-dispatch-token":
+            token = os.environ.get("GITHUB_DISPATCH_TOKEN", "").strip()
+            if not token:
+                print("Set GITHUB_DISPATCH_TOKEN in .env first.")
+                return 1
+            cloud.set_dispatch_token(token)
+            print("Stored the GitHub token in Supabase Vault as matching_github_token.")
         elif args.command == "revoke-key":
             print(f"Turned off {cloud.revoke_keys(args.label)} link(s) labelled {args.label}.")
         else:

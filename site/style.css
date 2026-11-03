@@ -100,3 +100,8 @@ textarea { min-height: 260px; resize: vertical; }
 .pick .addr { overflow-wrap: anywhere; color: var(--blue); }
 .pick:has(input:disabled) { opacity: .6; cursor: default; }
 .picks .sub { padding: 8px 12px 4px; border-top: 1px solid var(--line); background: var(--bg); }
+.headline { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+h1.sub { font-size: 22px; margin-top: 8px; }
+.top { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.pick.plain { border: 0; padding: 12px 0 0; }
+input[type="file"] { background: var(--card); }

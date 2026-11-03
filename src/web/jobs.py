@@ -41,10 +41,11 @@ def write_json(path, data):
 
 
 class Jobs:
-    def __init__(self, root, settings, cases, base, limit, data_dir, env, keep=6, cloud=None, ledger=None):
+    def __init__(self, root, settings, cases, base, limit, data_dir, env, keep=6, cloud=None, ledger=None, on_step=None):
         self.root, self.settings, self.cases, self.base, self.limit = root, settings, cases, base, limit
         self.data_dir, self.env, self.keep = data_dir, env, keep
         self.cloud, self.ledger = cloud, ledger  # ledger: CourtListener request ledger store (see make_search)
+        self.on_step = on_step  # Called with the status after every step (progress of an upload's run).
         self.lock = threading.Lock()
         self.active = None
         root.mkdir(parents=True, exist_ok=True)
@@ -121,6 +122,8 @@ class Jobs:
             if "total_hint" in item:  # Screening decided how many found cases will be read.
                 status["total"] = len(status["steps"]) + 2 * (len(self.cases) + item["total_hint"])
             write_json(folder / "status.json", status)
+            if self.on_step:
+                self.on_step(status)
 
         model = None
         try:

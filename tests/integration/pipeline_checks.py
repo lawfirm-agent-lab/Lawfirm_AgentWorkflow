@@ -15,7 +15,7 @@ port = os.environ.get('TEST_POSTGRES_PORT', '')
 if not port.isascii() or not port.isdecimal() or not 1 <= int(port) <= 65535:
     raise SystemExit('Provide a disposable localhost TEST_POSTGRES_PORT')
 URL = f'postgresql://postgres:local-test-only@127.0.0.1:{int(port)}/lawfirm_test'
-TABLES = ('matching_access_keys, matching_runs, matching_cvs, llm_calls, court_info, docket_info, notifications, analyses, events, subscriptions, recipients, docket_watch, api_requests, api_control, '
+TABLES = ('matching_requests, matching_access_keys, matching_runs, matching_cvs, llm_calls, court_info, docket_info, notifications, analyses, events, subscriptions, recipients, docket_watch, api_requests, api_control, '
           'pipeline_runs, email_outbox, changes, entries, runs, dockets')
 
 
@@ -82,7 +82,7 @@ class PostgreSQLSiteFunctionTests(unittest.TestCase):
         from tests.test_web_daily import daily_run
         self.store = PipelineStore(database_url=URL)
         self.addCleanup(self.store.close)
-        self.store.execute('TRUNCATE matching_access_keys, matching_runs, matching_cvs')
+        self.store.execute('TRUNCATE matching_requests, matching_access_keys, matching_runs, matching_cvs')
         self.cloud = CloudRuns(self.store)
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
@@ -113,6 +113,32 @@ class PostgreSQLSiteFunctionTests(unittest.TestCase):
         self.cloud.revoke_keys('test')
         with self.assertRaises(StoreError):
             self.call('SELECT matching_run(?, ?)', self.key, '20261103-090000-aaaaaa')
+
+    def test_upload_queues_a_run_and_saves_the_cv(self):
+        import base64
+        pdf = base64.b64encode(b'%PDF-1.4 ' + b'x' * 200).decode()
+        answer = self.call('SELECT matching_submit(?, ?, ?, ?)', self.key, '../My CV (2026).pdf', pdf, True)
+        self.assertEqual(answer['cv_name'], 'My_CV_2026_.pdf')
+        state = self.call('SELECT matching_request(?, ?)', self.key, answer['request_id'])
+        self.assertEqual(state['state'], 'queued')
+        self.assertIn('cannot start', state['error'])  # No pg_net or GitHub token in the test database.
+        self.assertEqual([name for name, _ in self.cloud.cvs()], ['My_CV_2026_.pdf'])
+        feed = self.call('SELECT matching_feed(?, ?)', self.key, 14)
+        self.assertIs(feed[0]['daily'], True)
+
+    def test_upload_checks_key_file_and_daily_limit(self):
+        import base64
+        from src.store.db import StoreError
+        pdf = base64.b64encode(b'%PDF-1.4 ' + b'x' * 200).decode()
+        with self.assertRaises(StoreError):
+            self.call('SELECT matching_submit(?, ?, ?, ?)', 'wrong', 'cv.pdf', pdf, False)
+        with self.assertRaises(StoreError):  # Not a PDF.
+            self.call('SELECT matching_submit(?, ?, ?, ?)', self.key, 'cv.pdf', base64.b64encode(b'hello' * 50).decode(), False)
+        for _ in range(10):
+            self.call('SELECT matching_submit(?, ?, ?, ?)', self.key, 'cv.pdf', pdf, False)
+        with self.assertRaises(StoreError):
+            self.call('SELECT matching_submit(?, ?, ?, ?)', self.key, 'cv.pdf', pdf, False)
+        self.assertEqual(self.cloud.cvs(), [])  # save=false: the CV is kept only with the request.
 
 
 if __name__ == '__main__':
