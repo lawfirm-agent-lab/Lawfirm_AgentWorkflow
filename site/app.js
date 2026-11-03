@@ -13,6 +13,10 @@ const WINDOWS = [7, 14, 30];
 const app = document.getElementById("app");
 const back = document.getElementById("back");
 const whoLabel = document.getElementById("who");
+const guideLink = document.getElementById("guide");
+// The daily check starts at 11:30 UTC (Supabase pg_cron); a backup run at 17:00 UTC covers a missed one.
+const DAILY_UTC = [11, 30];
+const BACKUP_UTC = [17, 0];
 const cache = { feed: {}, runs: {}, me: null };
 const MAX_UPLOAD = 10 * 1024 * 1024;
 let poll = null;  // Timer of the progress page; stopped when the page changes.
@@ -189,7 +193,9 @@ async function listPage() {
       : runs.length ? h("p", { class: "muted" }, `No daily check in the last ${days} days.`)
         : h("div", { class: "notice" }, h("h3", {}, "Nothing here yet"),
           h("p", { class: "muted" }, "Upload a CV to find matching cases. Tick \u201cSave this CV for daily checks\u201d " +
-            "and new cases for it will appear here every morning. You only see the CVs you upload.")),
+            "and new cases for it will appear here every day. You only see the CVs you upload."),
+          h("div", { class: "buttons" }, h("button", { class: "btn", type: "button", onclick: () => go({ view: "upload" }) }, "Upload a CV"),
+            h("button", { class: "btn light", type: "button", onclick: () => go({ view: "guide" }) }, "Read the guide"))),
     uploads.length ? h("div", { class: "section" }, h("h1", { class: "sub" }, "From uploaded CVs"),
       h("p", { class: "muted small" }, "Complaints filed in the year before the upload."), uploads) : null,
     h("div", { class: "controls" }, h("span", { class: "muted small" }, "Show the last"),
@@ -232,12 +238,15 @@ function uploadPage() {
   } },
     h("label", {}, "CV (PDF, at most 10 MB)"), file,
     h("label", { class: "pick plain" }, save, h("span", {}, h("b", {}, "Save this CV for daily checks"),
-      h("span", { class: "muted small" }, "New cases for it will then appear here every morning."))),
+      h("span", { class: "muted small" }, `New cases for it will then appear on the home page every day, usually by ${atLocal(DAILY_UTC, 30)}. ` +
+        "There is no email yet: open this site to see them."))),
     h("div", { class: "buttons" }, submit), status);
   show(h("h1", {}, "Upload a CV"),
     h("p", { class: "muted small intro" }, "The system reads the CV, searches CourtListener for complaints filed in the last year, " +
       "screens them, reads the relevant ones and matches them to the CV. It runs in the cloud and takes about 5 to 10 minutes; " +
-      "you can close this page and come back."), form);
+      "you can close this page and come back."), form,
+    h("p", { class: "small" }, h("a", { href: "#", onclick: (event) => { event.preventDefault(); go({ view: "guide" }); } },
+      "How daily checks and results work")));
 }
 
 // Saved CVs: stop or resume daily checks (unsubscribe), or delete a CV with all its results.
@@ -282,6 +291,93 @@ async function cvsPage() {
         h("button", { class: "btn danger", type: "button", onclick: remove(cv) }, "Delete"))))
       : h("p", { class: "muted" }, "No saved CV. Upload one and tick “Save this CV for daily checks”."),
     h("div", { class: "buttons" }, h("button", { class: "btn", type: "button", onclick: () => go({ view: "upload" }) }, "Upload a CV")));
+}
+
+// Local time (with the time zone) of a daily UTC time, plus `later` minutes.
+function atLocal([hour, minute], later = 0) {
+  const now = new Date();
+  const at = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), hour, minute + later));
+  return at.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit", timeZoneName: "short" });
+}
+
+// ---- guide ----
+
+function guideSection(title, ...body) {
+  return h("section", { class: "card guide" }, h("h3", {}, title), body);
+}
+
+function guidePage() {
+  back.hidden = false;
+  const daily = atLocal(DAILY_UTC);
+  const ready = atLocal(DAILY_UTC, 30);
+  const backup = atLocal(BACKUP_UTC);
+  const link = (label, view) => h("a", { href: "#", onclick: (event) => { event.preventDefault(); go(view); } }, label);
+  show(h("h1", {}, "Guide"),
+    h("p", { class: "muted small intro" }, "How Expert Match finds new court cases for an expert, when you get them, and how to use them."),
+
+    guideSection("What it does",
+      h("p", {}, "You give it an expert's CV. It reads the CV, searches CourtListener (federal court filings) for new complaints, " +
+        "screens out the ones that do not fit, reads the relevant ones in full, and explains which parts of the CV match " +
+        "which issues in each case. For good matches it drafts an email to the lawyers on the case.")),
+
+    guideSection("Getting started",
+      h("ol", {},
+        h("li", {}, "Open the personal link you were sent. It is your access: whoever has it sees your CVs, so do not forward it."),
+        h("li", {}, "Add it to your phone's home screen. iPhone: in Safari tap Share, then “Add to Home Screen”. " +
+          "Android: in Chrome tap ⋮, then “Add to Home screen”. The icon then opens straight to your cases."),
+        h("li", {}, "Upload a CV (", link("Upload a CV", { view: "upload" }), ").")),
+      h("p", { class: "muted small" }, "The name at the top right shows whose link this is.")),
+
+    guideSection("Upload a CV",
+      h("ol", {},
+        h("li", {}, "Choose the CV as a PDF (at most 10 MB)."),
+        h("li", {}, "Keep “Save this CV for daily checks” ticked if you want new cases for this expert every day."),
+        h("li", {}, "Tap “Find cases”. The first search covers complaints filed in the last year and takes about 3 to 10 minutes. " +
+          "The page shows each step; you can close it and come back.")),
+      h("p", {}, "The results appear on the home page under “From uploaded CVs”.")),
+
+    guideSection("When and how you get new cases",
+      h("ul", {},
+        h("li", {}, h("b", {}, "When: "), `every day at ${daily} the system checks each saved CV against complaints filed in the previous two days. ` +
+          `Results are usually ready by ${ready}. If that run is missed, a backup run at ${backup} catches up.`),
+        h("li", {}, h("b", {}, "Where: "), "open this website (or its home-screen icon). New cases are on the home page, under the day they were found. " +
+          "Pull down or reopen the page to refresh."),
+        h("li", {}, h("b", {}, "Notifications: "), "none yet. There is no email or phone alert; check the site each morning."),
+        h("li", {}, h("b", {}, "Each case once: "), "a case already shown for a CV is not shown again."),
+        h("li", {}, h("b", {}, "Quiet days: "), "few complaints are filed on weekends and holidays, so some days show nothing new."))),
+
+    guideSection("Reading the results",
+      h("ul", {},
+        h("li", {}, h("span", { class: "tier high" }, "High"), " the CV directly matches at least one technical issue in the case."),
+        h("li", {}, h("span", { class: "tier medium" }, "Medium"), " related experience that may help."),
+        h("li", {}, h("span", { class: "tier low" }, "Low"), " a weak link; “Insufficient information” means the complaint could not be read or judged."),
+        h("li", {}, h("b", {}, "Score: "), "orders cases within a level, from the evidence found, how technical the case is and how new it is."),
+        h("li", {}, h("b", {}, "Match reasons: "), "each pairs a CV item (E1, E2…) with a case issue (I1…) or expertise need (X1…), " +
+          "with the page each quote is on. The quotes are checked against the documents by code; the summaries are written by AI and can be wrong."),
+        h("li", {}, h("b", {}, "Complaint not on CourtListener: "), "about half of new complaints have no PDF there yet. Those are judged from the " +
+          "one-line docket text and listed with the cost of buying the complaint from PACER (at most $3). Nothing is bought automatically."))),
+
+    guideSection("Contacting the lawyers",
+      h("ol", {},
+        h("li", {}, "Open a High or Medium case and scroll to “Email draft”."),
+        h("li", {}, "Tick the lawyers to write to. Their addresses come from the complaint's signature block; you can add others."),
+        h("li", {}, "Edit the subject and message."),
+        h("li", {}, "Tap “Open in Gmail” (your Gmail adds your signature), “Open in Mail app”, or “Copy”. " +
+          "Nothing is sent until you send it yourself."))),
+
+    guideSection("Managing your CVs",
+      h("p", {}, link("Saved CVs", { view: "cvs" }), " lists the CVs you saved."),
+      h("ul", {},
+        h("li", {}, h("b", {}, "Stop daily checks: "), "no more daily searches for that CV; its past results stay. You can resume later."),
+        h("li", {}, h("b", {}, "Delete: "), "removes the CV and every result made from it. This cannot be undone.")),
+      h("p", { class: "muted small" }, "You only see and manage the CVs you uploaded.")),
+
+    guideSection("Limits",
+      h("ul", { class: "small" },
+        h("li", {}, "PDF CVs of at most 10 MB; at most 10 uploads a day."),
+        h("li", {}, "Daily checks look for newly filed complaints only; they do not follow later filings in older cases."),
+        h("li", {}, "Only federal cases on CourtListener are searched."),
+        h("li", {}, "AI summaries and judgments can be wrong; check the complaint before contacting anyone."))));
 }
 
 function minutes(from, to) {
@@ -450,6 +546,7 @@ async function route() {
     else if (p.get("request")) await requestPage(p.get("request"));
     else if (p.get("view") === "upload") uploadPage();
     else if (p.get("view") === "cvs") await cvsPage();
+    else if (p.get("view") === "guide") guidePage();
     else await listPage();
   } catch (error) {
     show(problem(error));
@@ -457,5 +554,6 @@ async function route() {
 }
 
 back.addEventListener("click", () => (history.length > 1 ? history.back() : go({})));
+guideLink.addEventListener("click", (event) => { event.preventDefault(); go({ view: "guide" }); });
 window.addEventListener("hashchange", route);
 route();

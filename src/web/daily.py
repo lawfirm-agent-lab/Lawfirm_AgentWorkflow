@@ -1,7 +1,8 @@
 """Daily check from the command line, for every saved CV (or the ones named):
 
 python -m src.web.daily --dotenv [--days 1] [--cv Mark_C_Nicely.ExpertWitness.pdf]
-python -m src.web.daily --cloud [--days 2]          (the scheduled GitHub Actions job)
+python -m src.web.daily --cloud [--days 2]          (the daily cloud job, started by Supabase pg_cron)
+python -m src.web.daily --cloud --skip-checked-within 20   (GitHub's own schedule: a backup run)
 
 Same runs as the web app's "Check new cases" (same run folders, so they show on the Today page),
 one CV after another. About 3 CourtListener requests per CV; the local cap still applies.
@@ -9,10 +10,13 @@ one CV after another. About 3 CourtListener requests per CV; the local cap still
 With --cloud the saved CVs and earlier checks come from the cloud database (src.matching.cloud),
 each new check is saved back to it, and CourtListener requests count against the docket
 pipeline's ledger there instead of the local one. --sqlite PATH stands in for the cloud database.
+--skip-checked-within HOURS leaves out CVs that already had a daily check in that many hours, so
+a backup run only covers what the main run missed.
 """
 import argparse
 import os
 import sys
+from datetime import datetime, timedelta, timezone
 
 from src.core.config import ConfigError
 from src.llm.config import LLMSettings
@@ -28,6 +32,8 @@ def main(argv=None, data_dir=ROOT / "data" / "matching"):
     parser.add_argument("--dotenv", action="store_true", help="Load settings from the local .env")
     parser.add_argument("--cloud", action="store_true", help="CVs, earlier checks and results in the cloud database")
     parser.add_argument("--sqlite", help="With --cloud: a local SQLite file instead of DATABASE_URL")
+    parser.add_argument("--skip-checked-within", type=float, metavar="HOURS",
+                        help="Leave out CVs whose last daily check is more recent than this")
     args = parser.parse_args(argv)
     if args.dotenv:
         from dotenv import load_dotenv
@@ -65,6 +71,12 @@ def check(args, data_dir, cloud, store):
         print(f"LLM settings: {exc}")
         return 1
     jobs = Jobs(data_dir / "runs", settings, [], ROOT, 160000, data_dir, os.environ, cloud=cloud, ledger=store)
+    if args.skip_checked_within is not None:
+        since = datetime.now(timezone.utc) - timedelta(hours=args.skip_checked_within)
+        recent = {r["cv"] for r in jobs.daily_runs() if datetime.fromisoformat(r["started"]) >= since}
+        for name in sorted(recent & set(names)):
+            print(f"{name}: checked in the last {args.skip_checked_within:g} hours; skipped")
+        names = [n for n in names if n not in recent]
     failed = 0
     for name in names:
         run_id = jobs.start(data_dir / "cvs" / name, name, days=args.days, wait=True)

@@ -109,3 +109,8 @@ input[type="file"] { background: var(--card); }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .btn.danger { color: #F2B8B5; } }
 .buttons.tight { margin-top: 0; }
 .who { margin-left: auto; font-size: 13px; opacity: .85; }
+.guide-link { color: var(--bar-ink); font-size: 14px; font-weight: 600; text-decoration: none; border: 1px solid rgba(255,255,255,.35); border-radius: 999px; padding: 3px 10px; }
+.guide h3 { margin-bottom: 6px; }
+.guide p, .guide li { line-height: 1.55; }
+.guide li + li { margin-top: 6px; }
+.guide .tier { margin-right: 4px; }
