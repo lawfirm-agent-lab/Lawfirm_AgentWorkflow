@@ -74,6 +74,34 @@ class ProfileTests(unittest.TestCase):
         self.assertEqual(profile["counsel"][0]["email_page"], 2)
         self.assertEqual([e["email"] for e in profile["emails"]], ["press@acme.com", "jcolgate@rothwellfigg.com", "mdrake@other.com"])
 
+    def test_long_party_lists_are_cut_not_rejected(self):
+        raw = json.loads(json.dumps({"plaintiffs": ["Acme"], "defendants": [f"Doe {n}" for n in range(1, 26)],
+                                     "case_type": "Fraud", "summary": "Acme sues 25 defendants.", "issues": [], "expertise": [],
+                                     "counsel": []}))
+        parsed = profiles.parse_case(json.dumps(raw))
+        self.assertEqual(parsed["defendants"], [f"Doe {n}" for n in range(1, 7)] + ["and 19 others"])
+        self.assertEqual(parsed["plaintiffs"], ["Acme"])
+
+    def test_one_unusable_case_does_not_stop_the_run(self):
+        from unittest.mock import patch
+        from src.matching import run as runner
+        expert_profile = {"name": "Jane", "headline": "", "domains": [], "items": [], "dropped": []}
+        model = MagicMock(stats={"cached": 0})
+        good = {"plaintiffs": [], "defendants": [], "case_type": "x", "domains": [], "summary": "s", "technology": [],
+                "issues": [], "expertise": [], "counsel": [], "pages": 1, "pages_read": 1, "dropped": []}
+
+        def load(model, case, base, limit, log):
+            if case["name"] == "Bad":
+                raise InvalidOutput("defendants must be a list")
+            return case, good
+
+        with patch.object(runner, "expert_profile", return_value=expert_profile), patch.object(runner, "load_case", side_effect=load):
+            experts = runner.run(model, ["cv.pdf"], [{"name": "Bad"}, {"name": "Good"}], Path("."), 1000, log=lambda item: None)
+        tiers = {r["case"]["name"]: r["match"]["tier"] for r in experts[0]["results"]}
+        self.assertEqual(tiers, {"Bad": "insufficient", "Good": "insufficient"})  # Good has no issue to match.
+        bad = next(r for r in experts[0]["results"] if r["case"]["name"] == "Bad")
+        self.assertIn("not usable", bad["case"]["note"])
+
     def test_bullets_are_cleaned(self):
         self.assertEqual(profiles.clean([" Led •  team"]), ["  Led    team"])
 

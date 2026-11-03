@@ -77,7 +77,10 @@ class Model:
             self.stats["output_tokens"] += reply.output_tokens
             try:
                 result = parse(reply.text)
-            except InvalidOutput:
+            except InvalidOutput as exc:
+                # Kept in the trace, so the inspection pages show what the model wrote.
+                self.record(prompt_name, label, input=user, output=reply.text, cached=False, error=f"Invalid output: {exc}",
+                            tokens=[reply.input_tokens, reply.output_tokens])
                 if attempt:
                     raise
                 continue
@@ -284,16 +287,28 @@ def run(model, cv_paths, cases, base, limit, log=print, search=None, keep=6, pdf
             pool += [c for c in found if c["url"] not in known]
         results = []
         for case in pool:
-            case, profile = load_case(model, case, base, limit, log)
+            # A model answer that stays invalid after its retry costs this case, not the whole run.
+            try:
+                case, profile = load_case(model, case, base, limit, log)
+            except InvalidOutput as exc:
+                case = {"document_label": "Complaint", "document_short": "Complaint", **case,
+                        "note": f"The AI summary of the document was not usable ({exc})."}
+                profile = None
+                step(log, "case", case["name"], model, model.stats["cached"], "summary not usable; case left unjudged")
             before = model.stats["cached"]
             if profile is None:
-                result = matching.insufficient("No readable case document, so the fit cannot be judged.")
+                result = matching.insufficient("No usable reading of the case document, so the fit cannot be judged."
+                                               if case.get("note", "").startswith("The AI summary") else
+                                               "No readable case document, so the fit cannot be judged.")
             elif not profile["issues"]:
                 result = matching.insufficient("No issue in the case document could be verified.")
             else:
-                parsed = model.ask("case_match_v1", match_input(expert, case, profile), matching.parse_match, 4000,
-                                   label=case["name"])
-                result = matching.enforce(parsed, expert, profile)
+                try:
+                    parsed = model.ask("case_match_v1", match_input(expert, case, profile), matching.parse_match, 4000,
+                                       label=case["name"])
+                    result = matching.enforce(parsed, expert, profile)
+                except InvalidOutput as exc:
+                    result = matching.insufficient(f"The AI match was not usable ({exc}), so the fit cannot be judged.")
             results.append({"case": case, "profile": profile, "match": result,
                             "score": matching.score(result, profile, case)})
             step(log, "match", case["name"], model, before,

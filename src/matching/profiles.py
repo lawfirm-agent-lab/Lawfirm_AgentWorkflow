@@ -46,10 +46,18 @@ def load(raw):
 
 
 def listed(data, field, limit):
+    """The first `limit` entries. A longer list is cut, not rejected: a complaint can really name
+    dozens of defendants."""
     value = data.get(field) or []
-    if not isinstance(value, list) or len(value) > 3 * limit:
-        raise InvalidOutput(f"{field} must be a short list")
+    if not isinstance(value, list):
+        raise InvalidOutput(f"{field} must be a list")
     return value[:limit]
+
+
+def parties(data, field, limit=6):
+    """Party names, the first `limit` of them, then "and N others" when the list is longer."""
+    names = strings(data, field, 500, 120)
+    return names[:limit] + ([f"and {len(names) - limit} others"] if len(names) > limit else [])
 
 
 def objects(data, field, limit):
@@ -89,7 +97,7 @@ def parse_expert(raw):
 
 def parse_case(raw):
     data = load(raw)
-    return {"plaintiffs": strings(data, "plaintiffs", 6, 120), "defendants": strings(data, "defendants", 6, 120),
+    return {"plaintiffs": parties(data, "plaintiffs"), "defendants": parties(data, "defendants"),
             "case_type": text(data.get("case_type"), 80, "case_type"), "domains": domains(data),
             "summary": text(data.get("summary"), 600, "summary"),
             "technology": strings(data, "technology", 8, 60),
