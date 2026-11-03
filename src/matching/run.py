@@ -136,6 +136,7 @@ def case_profile(model, case, pages, limit):
     parsed = model.ask("case_profile_v1", f"{header}\n\n<document>\n{body}</document>", profiles.parse_case, 6000,
                        label=case["name"])
     profile, dropped = profiles.verify_case(parsed, pages)
+    profile = profiles.add_emails(profile, pages)
     return {**profile, "pages": case.get("total_pages") or len(pages), "pages_read": used, "dropped": dropped}
 
 

@@ -1,6 +1,7 @@
 """Cloud copy of saved CVs and daily checks, with a SQLite file standing in for the cloud database."""
 import hashlib
 import io
+import json
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -67,6 +68,28 @@ class CloudTests(unittest.TestCase):
         self.assertEqual(self.cloud.revoke_keys("advisor"), 1)
         self.assertEqual(self.cloud.revoke_keys("advisor"), 0)
         self.assertEqual([r["active"] for r in self.cloud.keys()], [0])
+
+    def test_older_checks_get_lawyers_addresses_once(self):
+        runner = self.root / "runner"
+        daily_run(runner, "20261030-090000-aaaaaa", "jane.pdf", "2026-10-30T16:00:00+00:00", ["https://cl/docket/1/"])
+        path = runner / "20261030-090000-aaaaaa" / "result.json"
+        result = json.loads(path.read_text())
+        result[0]["results"][0]["case"]["document_url"] = "https://storage.courtlistener.com/1.pdf"
+        result[0]["results"][0]["profile"] = {"counsel": [{"name": "Mark Milton", "party": "Jane", "quote": "x", "page": 1}]}
+        path.write_text(json.dumps(result))
+        self.cloud.save_run(runner / "20261030-090000-aaaaaa")
+        fetched = []
+
+        def fetch(url):
+            fetched.append(url)
+            return ["Respectfully, Mark Milton mark.milton@miltonlawgroup.com"]
+
+        self.assertEqual(self.cloud.add_emails(fetch), 1)
+        self.assertEqual(self.cloud.add_emails(fetch), 0)  # Already has addresses: not fetched again.
+        self.assertEqual(len(fetched), 1)
+        self.cloud.pull(self.root / "laptop")
+        saved = json.loads((self.root / "laptop" / "20261030-090000-aaaaaa" / "result.json").read_text())
+        self.assertEqual(saved[0]["results"][0]["profile"]["counsel"][0]["email"], "mark.milton@miltonlawgroup.com")
 
 
 class CloudDailyTests(CloudTests):

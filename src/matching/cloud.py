@@ -11,6 +11,7 @@ python -m src.matching.cloud --dotenv list                                    sa
 python -m src.matching.cloud --dotenv pull                                    copy cloud checks to this computer
 python -m src.matching.cloud --dotenv new-key --label advisor                 make a link to the results website
 python -m src.matching.cloud --dotenv keys | revoke-key advisor               list or turn off website links
+python -m src.matching.cloud --dotenv add-emails                              add lawyers' addresses to older checks
 
 The results website (site/, on GitHub Pages) reads the daily checks through database functions
 that check an access key (migration 007). Only the key's SHA-256 is stored; new-key prints the
@@ -31,6 +32,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from src.core.config import ConfigError, secure_database_url
+from src.matching import profiles
 from src.store.db import StoreError, now
 from src.store.pipeline import PipelineStore
 
@@ -123,6 +125,30 @@ class CloudRuns:
             return store.execute("UPDATE matching_access_keys SET active=0 WHERE label=? AND active=1",
                                  (label,)).rowcount
 
+    def add_emails(self, fetch_pages):
+        """Add lawyers' email addresses (profiles.add_emails) to saved checks made before they were
+        found. fetch_pages(document_url) returns the document's page texts, or None to skip it.
+        Returns how many checks changed."""
+        with self.session() as store:
+            rows = store.execute("SELECT run_id, result_json FROM matching_runs WHERE result_json IS NOT NULL").fetchall()
+        changed = 0
+        for row in rows:
+            result, updated = json.loads(row["result_json"]), False
+            for expert in result:
+                for item in expert.get("results") or []:
+                    profile, url = item.get("profile"), item["case"].get("document_url")
+                    if not profile or "emails" in profile or not url:
+                        continue
+                    pages = fetch_pages(url)
+                    if pages is not None:
+                        item["profile"], updated = profiles.add_emails(profile, pages), True
+            if updated:
+                with self.session() as store, store.transaction():
+                    store.execute("UPDATE matching_runs SET result_json=? WHERE run_id=?",
+                                  (json.dumps(result, ensure_ascii=False, indent=1), row["run_id"]))
+                changed += 1
+        return changed
+
     def runs(self, limit=20):
         with self.session() as store:
             return store.execute("SELECT run_id, cv_name, state, started_at, finished_at FROM matching_runs "
@@ -149,6 +175,37 @@ class CloudRuns:
         return copied
 
 
+def document_pages():
+    """fetch_pages for add_emails: complaint PDFs from CourtListener's public storage (no API
+    request, no token), extracted like a case read; each document fetched once."""
+    import tempfile
+
+    import requests
+
+    from src.ingest.pdf import ExtractionError, extract_pdf
+    from src.llm.document import pages_from_extraction
+    from src.matching.run import CASE_PAGES, STORAGE
+
+    seen = {}
+
+    def fetch(url):
+        if not url.startswith(STORAGE):
+            return None
+        if url not in seen:
+            try:
+                response = requests.get(url, timeout=60)
+                response.raise_for_status()
+                with tempfile.TemporaryDirectory() as directory:
+                    path = Path(directory) / "document.pdf"
+                    path.write_bytes(response.content)
+                    seen[url] = profiles.clean(pages_from_extraction(extract_pdf(path, layout=False, first_pages=CASE_PAGES)))
+            except (OSError, ExtractionError):
+                seen[url] = None
+        return seen[url]
+
+    return fetch
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--dotenv", action="store_true", help="Load DATABASE_URL from the local .env")
@@ -163,6 +220,7 @@ def main(argv=None):
     commands.add_parser("keys", help="List website links (labels only)")
     revoke = commands.add_parser("revoke-key", help="Turn off the website links with this label")
     revoke.add_argument("label")
+    commands.add_parser("add-emails", help="Add lawyers' email addresses to checks saved before they were found")
     args = parser.parse_args(argv)
     from src.matching.run import ROOT
     if args.dotenv:
@@ -194,6 +252,8 @@ def main(argv=None):
         elif args.command == "keys":
             for r in cloud.keys():
                 print(f"{r['label']}  {'active' if r['active'] else 'revoked'}  {r['created_at']}")
+        elif args.command == "add-emails":
+            print(f"Added lawyers' addresses to {cloud.add_emails(document_pages())} saved checks.")
         elif args.command == "revoke-key":
             print(f"Turned off {cloud.revoke_keys(args.label)} link(s) labelled {args.label}.")
         else:

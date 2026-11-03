@@ -60,6 +60,20 @@ class ProfileTests(unittest.TestCase):
         self.assertEqual(profile["counsel"][0]["firm"], "Roe LLP")
         self.assertEqual(dropped, [])
 
+    def test_lawyers_get_the_address_with_their_surname(self):
+        # Signature blocks often list addresses apart from the names, as in these two complaints.
+        pages = ["Complaint text. Contact press@acme.com.",
+                 "Steven Lieberman Jennifer B. Maisel E. Michelle Drake ROTHWELL FIGG "
+                 "slieberman@rothwellfigg.com jmaisel@rothwellfigg.com jcolgate@rothwellfigg.com "
+                 "emdrake@bergermontague.com mdrake@other.com"]
+        counsel = [{"name": n, "firm": None, "party": "Acme", "quote": n, "page": 2}
+                   for n in ("Steven Lieberman", "Jennifer B. Maisel", "E. Michelle Drake", "Robert Parker Jr.")]
+        profile = profiles.add_emails({"counsel": counsel}, pages)
+        self.assertEqual([c["email"] for c in profile["counsel"]],
+                         ["slieberman@rothwellfigg.com", "jmaisel@rothwellfigg.com", "emdrake@bergermontague.com", None])
+        self.assertEqual(profile["counsel"][0]["email_page"], 2)
+        self.assertEqual([e["email"] for e in profile["emails"]], ["press@acme.com", "jcolgate@rothwellfigg.com", "mdrake@other.com"])
+
     def test_bullets_are_cleaned(self):
         self.assertEqual(profiles.clean([" Led •  team"]), ["  Led    team"])
 
@@ -106,6 +120,15 @@ class MatchTests(unittest.TestCase):
         html = render([{"profile": self.expert, "results": matching.rank(results), "discovery": None}], "now", "m")
         self.assertIn("Insufficient information", html)
         self.assertIn("Score 3.5", html)
+
+    def test_email_draft_lists_lawyers_to_choose(self):
+        profile = profiles.add_emails(self.case, ["", "", "John Roe, Roe LLP jroe@roellp.com clerk@court.gov"])
+        result = {"case": {"name": "A"}, "profile": profile, "match": self.enforce(match_raw()),
+                  "score": matching.score(self.enforce(match_raw()), profile, {"filed": "2026-09-30"}, date(2026, 10, 30))}
+        html = render([{"profile": self.expert, "results": [result], "discovery": None}], "now", "m")
+        self.assertIn("value='jroe@roellp.com' checked", html)  # Represents Acme, the party the draft is for.
+        self.assertIn("value='clerk@court.gov'>", html)  # Other address: offered, not checked.
+        self.assertIn("openMail(this,", html)
 
 
 class DiscoveryTests(unittest.TestCase):
