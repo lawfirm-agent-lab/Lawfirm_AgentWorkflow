@@ -41,11 +41,25 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           COURTLISTENER_TOKEN: ${{ secrets.COURTLISTENER_TOKEN }}
+          # The docket pipeline's LLM settings, unless MATCHING_LLM_MODEL is set: then all of
+          # MATCHING_LLM_* replace them, so matching can use another provider (e.g. OpenRouter).
           LLM_PROVIDER: ${{ vars.LLM_PROVIDER }}
           LLM_BASE_URL: ${{ vars.LLM_BASE_URL }}
           LLM_MODEL: ${{ vars.LLM_MODEL }}
           LLM_EXTRA_BODY: ${{ vars.LLM_EXTRA_BODY }}
           LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          MATCHING_LLM_PROVIDER: ${{ vars.MATCHING_LLM_PROVIDER }}
+          MATCHING_LLM_BASE_URL: ${{ vars.MATCHING_LLM_BASE_URL }}
+          MATCHING_LLM_MODEL: ${{ vars.MATCHING_LLM_MODEL }}
+          MATCHING_LLM_EXTRA_BODY: ${{ vars.MATCHING_LLM_EXTRA_BODY }}
+          MATCHING_LLM_API_KEY: ${{ secrets.MATCHING_LLM_API_KEY }}
           DAYS: ${{ inputs.days || '2' }}
           PYTHONDONTWRITEBYTECODE: "1"
-        run: python -m src.web.daily --cloud --days "$DAYS"
+        run: |
+          if [ -n "$MATCHING_LLM_MODEL" ]; then
+            export LLM_PROVIDER="$MATCHING_LLM_PROVIDER" LLM_BASE_URL="$MATCHING_LLM_BASE_URL" \
+              LLM_MODEL="$MATCHING_LLM_MODEL" LLM_EXTRA_BODY="$MATCHING_LLM_EXTRA_BODY" \
+              LLM_API_KEY="$MATCHING_LLM_API_KEY"
+          fi
+          echo "LLM model: $LLM_MODEL"
+          python -m src.web.daily --cloud --days "$DAYS"
