@@ -1,0 +1,47 @@
+name: Publish results website
+
+on:
+  push:
+    branches: [main]
+    paths: ["site/**", ".github/workflows/pages.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: Build and publish site/ to GitHub Pages
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      # The Supabase URL and publishable key are public by design: the site's database functions
+      # check the access key in the link, and the tables stay closed. Never use a secret key here.
+      - name: Write config.js
+        env:
+          SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ vars.SUPABASE_ANON_KEY }}
+        run: |
+          case "$SUPABASE_ANON_KEY" in
+            sb_secret_*) echo "SUPABASE_ANON_KEY is a secret key; use the publishable key." && exit 1 ;;
+            "") echo "Set the repository variables SUPABASE_URL and SUPABASE_ANON_KEY." && exit 1 ;;
+          esac
+          python3 -c 'import json, os; print("window.EXPERT_MATCH = " + json.dumps({"url": os.environ["SUPABASE_URL"], "key": os.environ["SUPABASE_ANON_KEY"]}) + ";")' > site/config.js
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - id: deployment
+        uses: actions/deploy-pages@v4

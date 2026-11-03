@@ -310,6 +310,26 @@ class MigrationTests(unittest.TestCase):
         self.assertEqual(apply_migrations(store)[0], "003_court_info")
         self.assertEqual(store.execute("SELECT court_id FROM docket_info").fetchone()["court_id"], "nysd")
 
+    def test_statements_keep_dollar_quoted_bodies_whole(self):
+        from src.store.migrate import statements
+        text = ("-- note; not a statement\nCREATE TABLE a (x TEXT);\n"
+                "CREATE FUNCTION f() RETURNS int LANGUAGE sql AS $$ SELECT 1; $$;\n"
+                "DO $tag$ BEGIN PERFORM 1; END $tag$;")
+        self.assertEqual(statements(text), ["CREATE TABLE a (x TEXT)",
+                                            "CREATE FUNCTION f() RETURNS int LANGUAGE sql AS $$ SELECT 1; $$",
+                                            "DO $tag$ BEGIN PERFORM 1; END $tag$"])
+
+    def test_postgres_only_migration_is_recorded_but_not_run_on_sqlite(self):
+        import tempfile
+        from pathlib import Path
+        from src.store.migrate import apply_migrations
+        store = Store(":memory:")
+        self.addCleanup(store.close)
+        with tempfile.TemporaryDirectory() as directory:
+            (Path(directory) / "001_only.postgres.sql").write_text("CREATE FUNCTION nope() RETURNS int AS $$ SELECT 1 $$ LANGUAGE sql;")
+            self.assertEqual(apply_migrations(store, directory), ["001_only.postgres"])
+            self.assertEqual(apply_migrations(store, directory), [])
+
     def test_reopen_is_idempotent_and_keeps_legacy_data(self):
         import tempfile
         from pathlib import Path

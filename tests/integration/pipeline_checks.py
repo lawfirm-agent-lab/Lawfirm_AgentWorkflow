@@ -15,7 +15,7 @@ port = os.environ.get('TEST_POSTGRES_PORT', '')
 if not port.isascii() or not port.isdecimal() or not 1 <= int(port) <= 65535:
     raise SystemExit('Provide a disposable localhost TEST_POSTGRES_PORT')
 URL = f'postgresql://postgres:local-test-only@127.0.0.1:{int(port)}/lawfirm_test'
-TABLES = ('matching_runs, matching_cvs, llm_calls, court_info, docket_info, notifications, analyses, events, subscriptions, recipients, docket_watch, api_requests, api_control, '
+TABLES = ('matching_access_keys, matching_runs, matching_cvs, llm_calls, court_info, docket_info, notifications, analyses, events, subscriptions, recipients, docket_watch, api_requests, api_control, '
           'pipeline_runs, email_outbox, changes, entries, runs, dockets')
 
 
@@ -72,10 +72,54 @@ class PostgreSQLCloudTests(CloudTests):
         self.store.execute('TRUNCATE matching_runs, matching_cvs')
 
 
+class PostgreSQLSiteFunctionTests(unittest.TestCase):
+    """The website's database functions return data only for an active access key."""
+
+    def setUp(self):
+        import tempfile
+        from datetime import datetime, timezone
+        from src.matching.cloud import CloudRuns
+        from tests.test_web_daily import daily_run
+        self.store = PipelineStore(database_url=URL)
+        self.addCleanup(self.store.close)
+        self.store.execute('TRUNCATE matching_access_keys, matching_runs, matching_cvs')
+        self.cloud = CloudRuns(self.store)
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        daily_run(root, '20261103-090000-aaaaaa', 'jane.pdf', datetime.now(timezone.utc).isoformat(timespec='seconds'),
+                  ['https://cl/docket/1/', 'https://cl/docket/2/'])
+        self.cloud.save_run(root / '20261103-090000-aaaaaa')
+        self.key = self.cloud.new_key('test')
+
+    def call(self, sql, *args):
+        return next(iter(self.store.execute(sql, args).fetchone().values()))
+
+    def test_feed_lists_recent_checks_for_a_valid_key(self):
+        feed = self.call('SELECT matching_feed(?, ?)', self.key, 14)
+        self.assertEqual([r['run_id'] for r in feed], ['20261103-090000-aaaaaa'])
+        expert = feed[0]['experts'][0]
+        self.assertEqual(expert['name'], 'Jane Doe')
+        self.assertEqual([c['tier'] for c in expert['cases']], ['high'])
+        self.assertEqual(len(expert['candidates']), 2)
+        run = self.call('SELECT matching_run(?, ?)', self.key, '20261103-090000-aaaaaa')
+        self.assertEqual(run['result'][0]['results'][0]['match']['summary'], 'Strong fit.')
+
+    def test_wrong_or_revoked_key_reads_nothing(self):
+        from src.store.db import StoreError
+        for key in ('wrong', '', None):
+            with self.assertRaises(StoreError):
+                self.call('SELECT matching_feed(?, ?)', key, 14)
+        self.cloud.revoke_keys('test')
+        with self.assertRaises(StoreError):
+            self.call('SELECT matching_run(?, ?)', self.key, '20261103-090000-aaaaaa')
+
+
 if __name__ == '__main__':
     suite = unittest.TestSuite()
     for case in (PostgreSQLPipelineTests, PostgreSQLSourceTests, PostgreSQLBudgetTests,
                  PostgreSQLLLMAnalyzerTests, PostgreSQLShadowTests,
-                 PostgreSQLDocumentAnalyzerTests, PostgreSQLCloudTests):
+                 PostgreSQLDocumentAnalyzerTests, PostgreSQLCloudTests,
+                 PostgreSQLSiteFunctionTests):
         suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(case))
     raise SystemExit(not unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful())
