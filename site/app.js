@@ -378,10 +378,28 @@ function guidePage() {
         h("li", {}, h("span", { class: "tier medium" }, "Medium"), " related experience that may help."),
         h("li", {}, h("span", { class: "tier low" }, "Low"), " a weak link; “Insufficient information” means the complaint could not be read or judged."),
         h("li", {}, h("b", {}, "Score: "), "orders cases within a level, from the evidence found, how technical the case is and how new it is."),
-        h("li", {}, h("b", {}, "Match reasons: "), "each pairs a CV item (E1, E2…) with a case issue (I1…) or expertise need (X1…), " +
-          "with the page each quote is on. The quotes are checked against the documents by code; the summaries are written by AI and can be wrong."),
+        h("li", {}, h("b", {}, "Match reasons: "), "why the CV fits the case, point by point (see the next section)."),
         h("li", {}, h("b", {}, "Complaint not on CourtListener: "), "about half of new complaints have no PDF there yet. Those are judged from the " +
           "one-line docket text and listed with the cost of buying the complaint from PACER (at most $3). Nothing is bought automatically."))),
+
+    guideSection("Match reasons: what E1, I1 and X1 mean",
+      h("p", {}, "Each match reason links one thing from the CV to one thing in the case, with a quote from each document and the page it is on."),
+      h("ul", {},
+        h("li", {}, h("b", {}, "E1, E2, …"), " an item from the expert's CV: a job, project, patent, publication, past testimony, degree, " +
+          "certification, skill or award. E1 is the first one found, E2 the second, and so on."),
+        h("li", {}, h("b", {}, "I1, I2, …"), " an issue in dispute in the case, as stated in the complaint. I1 is the first issue."),
+        h("li", {}, h("b", {}, "X1, X2, …"), " an area of expertise the case needs, for example machine learning or medical devices."),
+        h("li", {}, h("b", {}, "direct"), " the CV item is about the same thing as the issue; ", h("b", {}, "related"), " it is close, but not the same.")),
+      h("p", { class: "muted small" }, "Example (made up):"),
+      h("div", { class: "reason" },
+        h("div", {}, h("span", { class: "strength" }, "direct"), " · Both concern image-recognition models for spotting defects."),
+        h("div", { class: "pair" },
+          side("CV E2 · project · p. 1", "Led development of a deep-learning system that detects defects in factory images.",
+            "Built a defect-detection model."),
+          side("Complaint I1 · p. 4", "Defendant's inspection software uses a neural network to identify defective parts…",
+            "Whether the accused software copies the plaintiff's defect-detection method."))),
+      h("p", { class: "muted small" }, "Read it as: CV item E2 matches case issue I1, directly. Code checks that every quote really appears " +
+        "in the CV or the complaint on that page; the one-line summaries are written by AI and can be wrong.")),
 
     guideSection("Contacting the lawyers",
       h("ol", {},
@@ -544,7 +562,10 @@ async function casePage(id, index) {
       h("div", { class: "tags" }, [profile.case_type, ...profile.domains].filter(Boolean).map((t) => h("span", { class: "tag" }, t))),
       h("p", { class: "small" }, h("b", {}, "Plaintiffs: "), profile.plaintiffs.join("; ")),
       h("p", { class: "small" }, h("b", {}, "Defendants: "), profile.defendants.join("; "))) : null,
-    h("div", { class: "section" }, h("h2", {}, `Match reasons (CV ↔ ${doc.toLowerCase()})`), reasons(match, doc)),
+    h("div", { class: "section" }, h("h2", {}, `Match reasons (CV ↔ ${doc.toLowerCase()})`),
+      h("p", { class: "muted small" }, "E = an item in the CV · I = an issue in the case · X = expertise the case needs. ",
+        textLink("More in the guide", { view: "guide" })),
+      reasons(match, doc)),
     match.gaps && match.gaps.length ? h("div", { class: "section" }, h("h2", {}, "Gaps"), h("ul", {}, match.gaps.map((g) => h("li", {}, g)))) : null,
     profile ? h("div", { class: "section" }, h("h2", {}, `Disputed issues (${profile.issues.length})`),
       h("ul", {}, profile.issues.map((i) => h("li", {}, i.issue, h("span", { class: "muted" }, ` (${i.id}, p. ${i.page})`))))) : null,
