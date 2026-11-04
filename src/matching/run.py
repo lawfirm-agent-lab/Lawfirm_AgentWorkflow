@@ -7,7 +7,9 @@ CourtListener entries JSON with plain_text) plus "entry_number", or a local "pdf
 without a readable document is reported as insufficient information.
 
 With --find-cases, each CV also gets new cases found on CourtListener (src.matching.discover):
-3 search requests per CV, capped by a local ledger; complaint PDFs come from public storage.
+3 search requests per CV, capped by a local ledger; complaint PDFs come from public storage. With
+TAVILY_API_KEY set, relevant complaints missing there are also looked for on the web
+(src.matching.elsewhere).
 Without it nothing is downloaded and no CourtListener request is made. LLM answers are cached
 in data/matching/cache, so a re-run only calls the model for inputs or prompts that changed.
 """
@@ -33,6 +35,7 @@ ROOT = Path(__file__).resolve().parents[2]
 PROMPTS = ROOT / "src" / "llm" / "prompts"
 STORAGE = "https://storage.courtlistener.com/"
 MIN_CASE_CHARS = 2000
+MIN_WEB_CHARS = 800  # A press release is shorter than a complaint.
 CASE_PAGES = 150
 LOCAL_LIMITS = Limits(per_day=30, headroom_per_day=0, headroom_per_hour=0, max_requests_per_run=6)
 CLOUD_LIMITS = Limits(max_requests_per_run=6)  # Account limits less the pipeline's headroom, 6 per CV.
@@ -125,6 +128,8 @@ def case_document(case, base):
             doc = next((d for d in docs if d.get("attachment_number") is None), docs[0])
             url = STORAGE + doc["filepath_local"] if doc.get("filepath_local") else None
             return profiles.clean(pages_from_plain_text(doc["plain_text"])), url
+    elif case.get("web_text"):  # A verified web page about the case, found by the search agent.
+        return profiles.clean([Path(case["web_text"]).read_text(encoding="utf-8")]), case.get("document_url")
     elif case.get("pdf"):
         # The model reads at most --max-case-chars (about 100-150 pages); later pages are usually exhibits.
         extracted = extract_pdf(base / case["pdf"], layout=False, first_pages=CASE_PAGES)
@@ -178,10 +183,12 @@ def expert_view(expert, items=True):
     return json.dumps(view, ensure_ascii=False, indent=1)
 
 
-def find_cases(model, search, expert, keep, pdf_dir, log, per_search=8, skip=()):
+def find_cases(model, search, expert, keep, pdf_dir, log, per_search=8, skip=(), finder=None):
     """Search, download and screen. Returns (cases to profile, discovery record for the report).
 
-    skip: docket URLs already shown to this expert (earlier daily checks); they are not taken again."""
+    skip: docket URLs already shown to this expert (earlier daily checks); they are not taken again.
+    finder: the search agent (elsewhere.Finder), which looks for relevant complaints missing on
+    CourtListener; what it verifies is read like the other cases."""
     before = model.stats["cached"]
     searches = model.ask("case_search_v1", f"<expert>\n{expert_view(expert)}\n</expert>", discover.parse_searches, 1000,
                          label="Search terms")
@@ -233,11 +240,15 @@ def find_cases(model, search, expert, keep, pdf_dir, log, per_search=8, skip=())
     relevant = [c for c in candidates if c["screen"]["relevant"]]
     kept = discover.diverse([c for c in relevant if c["has_pdf"]], keep)
     wanted = [c for c in relevant if not c["has_pdf"]]
-    for case in wanted:  # The search agent's slot: other websites that may have the complaint.
-        case["elsewhere"] = elsewhere.find(case)
     step(log, "screen", "Screening", model, before,
          f"{len(relevant)} of {len(candidates)} candidates look relevant, {len(kept)} kept for full reading"
          + (f", {len(wanted)} without a complaint PDF worth getting" if wanted else ""), total_hint=len(kept))
+    for case in wanted[:elsewhere.MAX_CASES] if finder else []:
+        before = model.stats["cached"]
+        web = case["elsewhere"] = finder.find(case, pdf_dir)
+        step(log, "web", case["name"], model, before,
+             f"found {web['kind']} on {web['source']} ({web['matched_by']})" if web["verified"]
+             else f"{web['results']} web results, none verified")
     for case in candidates:
         case["kept"] = case in kept
     record = {"searches": searches, "days": search.days, "since": search.since().isoformat(), "skipped": skipped,
@@ -247,6 +258,14 @@ def find_cases(model, search, expert, keep, pdf_dir, log, per_search=8, skip=())
               "cost": round(sum(c["cost"] for c in wanted), 2)}
     cases = [{k: c[k] for k in ("name", "court", "filed", "url", "document_label", "document_url", "pdf", "docket_number",
                                 "found_by")} for c in kept]
+    for c in wanted:
+        if c.get("web_pdf") or c.get("web_text"):
+            web, short = c["elsewhere"], "Complaint" if c.get("web_pdf") else "Web page"
+            cases.append({**{k: c.get(k) for k in ("name", "court", "filed", "url", "docket_number", "found_by")},
+                          "pdf": c.get("web_pdf"), "web_text": c.get("web_text"), "from_web": web["kind"],
+                          "web_source": web["source"], "web_check": web["matched_by"],
+                          "document_label": f"{short} (from {web['source']})", "document_short": short,
+                          "document_url": web["url"]})
     return cases, record
 
 
@@ -258,7 +277,7 @@ def load_case(model, case, base, limit, log):
     except ExtractionError as exc:
         pages, url, case["note"] = None, None, f"The document could not be read: {exc}"
     case["document_url"] = case.get("document_url") or url
-    if not pages or sum(len(p) for p in pages) < MIN_CASE_CHARS:
+    if not pages or sum(len(p) for p in pages) < (MIN_WEB_CHARS if case.get("web_text") else MIN_CASE_CHARS):
         case["note"] = case.get("note") or "No readable case document on CourtListener."
         step(log, "case", case["name"], model, before, "no readable document")
         return case, None
@@ -269,11 +288,14 @@ def load_case(model, case, base, limit, log):
     return case, profile
 
 
-def run(model, cv_paths, cases, base, limit, log=print, search=None, keep=6, pdf_dir=None, cv_name=None, skip=()):
+def run(model, cv_paths, cases, base, limit, log=print, search=None, keep=6, pdf_dir=None, cv_name=None, skip=(),
+        web=None):
     """log receives one dict per finished step: stage, label, detail, cached (and total_hint after screening).
 
     With a search (CourtListenerSearch), new cases are found for each expert and added to `cases`;
-    docket URLs in skip are left out of the search results."""
+    docket URLs in skip are left out of the search results. With web (elsewhere.WebSearch) too,
+    the search agent looks for relevant complaints missing on CourtListener."""
+    finder = elsewhere.Finder(model, web, search, log) if web and search else None
     experts = []
     for path in cv_paths:
         before = model.stats["cached"]
@@ -282,7 +304,7 @@ def run(model, cv_paths, cases, base, limit, log=print, search=None, keep=6, pdf
              f"{len(expert['items'])} experience items verified, {len(expert['dropped'])} dropped")
         pool, discovery = list(cases), None
         if search:
-            found, discovery = find_cases(model, search, expert, keep, pdf_dir, log, skip=skip)
+            found, discovery = find_cases(model, search, expert, keep, pdf_dir, log, skip=skip, finder=finder)
             known = {c.get("url") for c in pool}
             pool += [c for c in found if c["url"] not in known]
         results = []
@@ -307,6 +329,9 @@ def run(model, cv_paths, cases, base, limit, log=print, search=None, keep=6, pdf
                     parsed = model.ask("case_match_v1", match_input(expert, case, profile), matching.parse_match, 4000,
                                        label=case["name"])
                     result = matching.enforce(parsed, expert, profile)
+                    if case.get("from_web") == "web page" and result["tier"] == "high":
+                        result = {**result, "tier": "medium",
+                                  "notes": result["notes"] + ["Lowered from high: read from a web page, not the complaint"]}
                 except InvalidOutput as exc:
                     result = matching.insufficient(f"The AI match was not usable ({exc}), so the fit cannot be judged.")
             results.append({"case": case, "profile": profile, "match": result,
@@ -341,6 +366,14 @@ def make_search(env, data_dir, days=365, ledger=None):
     return discover.CourtListenerSearch(session, budget, data_dir / "search", days)
 
 
+def make_web(env, data_dir):
+    """The search agent's web search, or None when TAVILY_API_KEY is not set (it is then skipped)."""
+    import requests
+
+    key = (env.get("TAVILY_API_KEY") or "").strip()
+    return elsewhere.WebSearch(requests.Session(), key, data_dir / "web") if key else None
+
+
 def print_step(item):
     print(f"{item['stage']:6} {item['label']}: {item['detail']}{' (cached)' if item['cached'] else ''}")
 
@@ -367,7 +400,9 @@ def main(argv=None):
         model = Model(settings, args.out / "cache")
         cases = json.loads(args.cases.read_text(encoding="utf-8"))
         search = make_search(os.environ, args.out, args.days) if args.find_cases else None
-        experts = run(model, args.cv, cases, ROOT, args.max_case_chars, print_step, search, args.keep, args.out / "pdfs")
+        web = make_web(os.environ, args.out) if args.find_cases else None
+        experts = run(model, args.cv, cases, ROOT, args.max_case_chars, print_step, search, args.keep, args.out / "pdfs",
+                      web=web)
     except (ConfigError, LLMError, InvalidOutput, ExtractionError, discover.DiscoveryError, OSError, ValueError) as exc:
         print(f"Matching failed: {type(exc).__name__}: {exc}")
         return 1

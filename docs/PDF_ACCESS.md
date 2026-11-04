@@ -55,7 +55,7 @@ A purchase threshold (only "possibly relevant" complaints, a daily cap, a person
 
 - Searches include complaints without a PDF.
 - Screening judges them from the case name and docket text: relevant, not relevant, or unclear ("can't tell").
-- Relevant ones are listed on the results and New cases by day pages as "Complaint not on CourtListener: possibly relevant", with the PACER cost (at most $3 each). They are not matched in full.
+- Relevant ones go to the search agent (see MATCHING.md), which looks for the complaint on public websites such as agency, court and law firm sites. A copy it can verify is read and matched in full. The others are listed on the results and New cases by day pages as "Complaint not on CourtListener: possibly relevant", with the PACER cost (at most $3 each).
 
 ## Problem found: keyword search rarely finds complaints without a PDF
 

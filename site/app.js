@@ -160,6 +160,14 @@ function counts(expert, fresh = true) {
     expert.skipped && `${expert.skipped} shown before`);
 }
 
+// What the search agent found for a complaint missing on CourtListener.
+function webNote(found) {
+  if (!found) return null;
+  if (!found.verified) return h("div", { class: "muted" }, "Searched the web: no copy could be verified as this case.");
+  return h("div", {}, "Found on the web: ", h("a", { href: found.url, target: "_blank", rel: "noopener" }, found.source),
+    found.kind === "complaint" ? " (the complaint; read and matched above)" : " (a web page, not the complaint; read and matched above)");
+}
+
 function expertCard(run, expert) {
   const wanted = expert.candidates.filter((c) => c.has_pdf === false && c.screen && c.screen.relevant);
   return h("section", { class: "card" },
@@ -178,7 +186,7 @@ function expertCard(run, expert) {
         h("a", { href: c.url, target: "_blank", rel: "noopener" }, c.name),
         h("div", { class: "muted" }, meta(c.court, c.filed && `filed ${c.filed}`, `PACER ≤ ${money(c.cost || 3)}`)),
         h("div", {}, c.screen.reason),
-        c.elsewhere && c.elsewhere.url ? h("div", {}, "Found elsewhere: ", h("a", { href: c.elsewhere.url, target: "_blank", rel: "noopener" }, c.elsewhere.source || "link")) : null)))) : null);
+        webNote(c.elsewhere))))) : null);
 }
 
 async function listPage() {
@@ -380,7 +388,10 @@ function guidePage() {
         h("li", {}, h("b", {}, "Score: "), "orders cases within a level, from the evidence found, how technical the case is and how new it is."),
         h("li", {}, h("b", {}, "Match reasons: "), "why the CV fits the case, point by point (see the next section)."),
         h("li", {}, h("b", {}, "Complaint not on CourtListener: "), "about half of new complaints have no PDF there yet. Those are judged from the " +
-          "one-line docket text and listed with the cost of buying the complaint from PACER (at most $3). Nothing is bought automatically."))),
+          "one-line docket text. For relevant ones a search agent looks for the complaint on the web (agency, court and law firm sites). " +
+          "A copy is used only if code confirms it names both parties and carries the docket number or filing year; it is then read in full " +
+          "and labelled with its source. A news or press page alone is labelled as not the complaint and is never rated above Medium. " +
+          "If nothing is confirmed, the case is listed with the cost of buying the complaint from PACER (at most $3). Nothing is bought automatically."))),
 
     guideSection("Match reasons: what E1, I1 and X1 mean",
       h("p", {}, "Each match reason links one thing from the CV to one thing in the case, with a quote from each document and the page it is on."),
@@ -555,7 +566,12 @@ async function casePage(id, index) {
     h("div", { class: "top" }, tierTag(match.tier), " ", h("span", { class: "score" }, `score ${Number(score.total).toFixed(1)} · ${score.direct} direct, ${score.related} related`)),
     h("div", { class: "links" },
       c.url ? h("a", { href: c.url, target: "_blank", rel: "noopener" }, "Docket on CourtListener") : null,
-      c.document_url ? h("a", { href: c.document_url, target: "_blank", rel: "noopener" }, `${doc} PDF${c.total_pages ? ` (${c.total_pages} pages)` : ""}`) : null),
+      c.document_url ? h("a", { href: c.document_url, target: "_blank", rel: "noopener" },
+        c.from_web === "web page" ? `Source page (${c.web_source})` : `${doc} PDF${c.total_pages ? ` (${c.total_pages} pages)` : ""}`) : null),
+    c.from_web ? h("p", { class: "notice small" }, c.from_web === "complaint"
+      ? `CourtListener has no copy of this complaint. The search agent found it on ${c.web_source} and checked it is this case (${c.web_check}).`
+      : `CourtListener has no copy of this complaint. This reading is from a web page on ${c.web_source} (checked: ${c.web_check}), ` +
+        "not the complaint itself, so the level is at most Medium.") : null,
     h("div", { class: "section" }, h("h2", {}, "Why it fits"), h("p", {}, match.summary || "")),
     profile ? h("div", { class: "section" }, h("h2", {}, "The case"),
       h("p", {}, profile.summary),

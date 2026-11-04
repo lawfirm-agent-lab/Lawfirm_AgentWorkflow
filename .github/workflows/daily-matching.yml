@@ -43,6 +43,7 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           COURTLISTENER_TOKEN: ${{ secrets.COURTLISTENER_TOKEN }}
+          TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
           # The docket pipeline's LLM settings, unless MATCHING_LLM_MODEL is set: then all of
           # MATCHING_LLM_* replace them, so matching can use another provider (e.g. OpenRouter).
           LLM_PROVIDER: ${{ vars.LLM_PROVIDER }}
