@@ -62,13 +62,13 @@ class RequestTests(unittest.TestCase):
         self.assertEqual(owner, "jane")  # The run belongs to whoever uploaded the CV.
         self.assertEqual(self.run_request()[0], 1)  # Not queued any more: not run again.
 
-    def test_saved_cv_is_kept_and_failure_is_reported(self):
-        self.queue(save=1)
+    def test_failure_is_reported_and_the_cv_copy_cleared(self):
+        self.queue(save=1)  # A saved CV keeps its own copy in matching_cvs; the request's is not needed.
         code, _, _ = self.run_request(fail=True)
         row = self.cloud.request("r1")
         self.assertEqual((code, row["state"]), (1, "failed"))
         self.assertIn("model broke", row["error"])
-        self.assertIsNotNone(row["pdf_base64"])
+        self.assertIsNone(row["pdf_base64"])
 
     def test_cleanup_marks_an_unfinished_request_failed(self):
         self.queue()

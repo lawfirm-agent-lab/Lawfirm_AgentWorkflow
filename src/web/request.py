@@ -5,8 +5,8 @@ python -m src.web.request --id REQUEST_ID          (.github/workflows/matching-r
 Reads the request's CV from the cloud database, searches CourtListener for complaints filed in the
 last year (no fixed case pool), and saves the run like a daily check so the website shows it. The
 request's state follows along: running (with progress after every step), then done with the
-run id, or failed with the error. The CV copy in the request is cleared at the end unless it was
-also saved for daily checks. The run belongs to whoever uploaded the CV (the request's owner).
+run id, or failed with the error. The CV copy in the request is cleared when it ends either way; a
+CV saved for daily checks has its own copy in matching_cvs. The run belongs to whoever uploaded the CV (the request's owner).
 --sqlite PATH stands in for the cloud database.
 """
 import argparse
@@ -51,7 +51,7 @@ def main(argv=None, data_dir=ROOT / "data" / "matching"):
             request = cloud.request(args.id)
             if request and request["state"] in ("queued", "running"):
                 cloud.update_request(args.id, state="failed", error=args.mark_failed, progress="Stopped",
-                                     **({} if request["save"] else {"pdf_base64": None}))
+                                     pdf_base64=None)
             return 0
         return run(cloud, store, args.id, data_dir)
     finally:
@@ -66,7 +66,7 @@ def run(cloud, store, request_id, data_dir):
     try:
         settings = LLMSettings.from_env(os.environ)
     except ConfigError as exc:
-        cloud.update_request(request_id, state="failed", error=f"LLM settings: {exc}")
+        cloud.update_request(request_id, state="failed", error=f"LLM settings: {exc}", pdf_base64=None)
         print(f"LLM settings: {exc}")
         return 1
     cloud.update_request(request_id, state="running", progress="Starting", error=None)
@@ -84,7 +84,7 @@ def run(cloud, store, request_id, data_dir):
     done = status["state"] == "done"
     cloud.update_request(request_id, state="done" if done else "failed", run_id=run_id if done else None,
                          error=None if done else status["error"], progress="Finished" if done else "Stopped",
-                         **({} if request["save"] else {"pdf_base64": None}))
+                         pdf_base64=None)
     print(f"{request['cv_name']}: {status['state']} (run {run_id}){' - ' + status['error'] if status['error'] else ''}")
     return 0 if done else 1
 
