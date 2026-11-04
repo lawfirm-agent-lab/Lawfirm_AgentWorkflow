@@ -26,6 +26,7 @@ from src.llm.output import InvalidOutput, text
 from src.matching.profiles import DOMAINS, clean, load, objects
 
 SEARCH = "https://www.courtlistener.com/api/rest/v4/search/"
+DOCKET = "https://www.courtlistener.com/api/rest/v4/dockets/{}/"
 SITE = "https://www.courtlistener.com"
 STORAGE = "https://storage.courtlistener.com/"
 FILEPATH = re.compile(r"recap/gov\.uscourts\.([a-z0-9]+)\.\d+/[A-Za-z0-9._-]+\.pdf")
@@ -157,6 +158,32 @@ class CourtListenerSearch:
             path.write_text(json.dumps(rows), encoding="utf-8")
             cached = False
         return [c for c in (candidate(r) for r in rows if isinstance(r, dict)) if c], cached
+
+    def docket(self, docket_id):
+        """{docket_number, court} of a docket: one API request, cached. For the search agent."""
+        path = self.cache_dir / f"docket-{int(docket_id)}.json"
+        if path.exists():
+            return json.loads(path.read_text(encoding="utf-8"))
+        if not self.budget.acquire():
+            raise DiscoveryError("CourtListener request budget is used up for now")
+        try:
+            response = self.session.get(DOCKET.format(int(docket_id)), timeout=(10, 30), allow_redirects=False)
+        except OSError as exc:
+            raise DiscoveryError(f"CourtListener docket request failed: {type(exc).__name__}") from None
+        if response.status_code == 429:
+            self.budget.block()
+            raise DiscoveryError("CourtListener returned HTTP 429; requests paused")
+        if response.status_code != 200:
+            raise DiscoveryError(f"CourtListener docket request returned HTTP {response.status_code}")
+        try:
+            data = response.json()
+            number, court = data.get("docket_number"), data.get("court_id")
+        except (ValueError, AttributeError):
+            raise DiscoveryError("Unexpected docket response") from None
+        info = {"docket_number": number if isinstance(number, str) and len(number) < 60 else None,
+                "court": court.upper() if isinstance(court, str) and court.isalnum() and len(court) < 16 else None}
+        path.write_text(json.dumps(info), encoding="utf-8")
+        return info
 
     def download(self, case, pdf_dir):
         """The complaint PDF from public storage (no token sent), cached by path."""

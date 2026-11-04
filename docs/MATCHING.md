@@ -21,7 +21,11 @@ Expert CV (PDF)
 │   └── model screens all candidates (case_screen_v1): on their first pages, or on the case name
 │       and docket text when there is no PDF; relevant / not relevant / unclear.
 │       Relevant ones with a PDF are kept, at most 3 of one case type first, up to 6.
-│       Relevant ones without a PDF are listed with the PACER cost (see PDF_ACCESS.md)
+│       Relevant ones without a PDF go to the search agent (up to 3 per CV): a docket request
+│       for the docket number, 2 web searches (Tavily), the model picks likely results, code
+│       verifies them (both parties + docket number or filing year). A verified complaint PDF is
+│       read like the others; a verified web page alone is read but capped at Medium; otherwise
+│       the case is listed with the PACER cost (see PDF_ACCESS.md)
 ├── 3. Understand each case (fixed pool + found) → plain-English profile (case_profile_v1):
 │      parties, case type, summary, technology, issues I1…, expertise areas X1…
 │      ("stated" by the document or "inferred"), counsel. Quotes verified.
@@ -114,7 +118,15 @@ The token: a fine-grained GitHub personal access token for this repository only,
 
 **My CVs** (website page, linked in the top bar once a CV is saved, and commands): a saved CV can be stopped (no more daily checks; its past results stay; it can be resumed) or deleted (the CV, every daily check and upload run made from it, and its finished upload requests; copies already on someone's computer in `data/matching/runs` are not touched). Database functions `matching_cvs`, `matching_cv_active` and `matching_cv_delete` ([010_matching_cv_admin.postgres.sql](../sql/migrations/010_matching_cv_admin.postgres.sql)) check the access key like the others; on the command line: `list`, `stop-cv`, `resume-cv`, `delete-cv`. Each person can do this only for their own CVs; an admin link for any.
 
-Complaints that are relevant but have no PDF go through `src.matching.elsewhere.find` (the slot for the search agent; it finds nothing yet), and a link it returns is shown with the case.
+**Search agent** ([src/matching/elsewhere.py](../src/matching/elsewhere.py), prompt `elsewhere_pick_v1`): complaints judged relevant but without a PDF on CourtListener, at most 3 per CV and run. It runs only when `TAVILY_API_KEY` is set (`.env` locally, a GitHub secret in the cloud); without it the run is unchanged.
+
+1. One CourtListener docket request adds the docket number and court (counted in the same budget).
+2. Two Tavily searches with strong identifiers only: `"<defendant>" <plaintiff> complaint <year>` and `"<docket number>" complaint`. Only public case names and numbers are sent; never the CV.
+3. The model sees the titles, addresses and snippets as untrusted data and picks the results about this very case, labelled complaint, press release, news or other.
+4. Code fetches up to 3 picks (complaint PDFs first) from public addresses only (no private or local hosts, every redirect checked, 10 MB, PDF or HTML). A result is kept only if its text names both parties and has the docket number, or failing that the filing year. A PDF must also say "complaint". A verified page is searched for links to the complaint PDF, which are checked the same way.
+5. A verified complaint PDF joins the cases read in full, labelled "Complaint (from ftc.gov)". A verified web page alone is read the same way (at least 800 characters) but labelled as not the complaint, and its match is never above Medium. Otherwise nothing changes: the case stays listed with the PACER cost, and the website says the web was searched.
+
+Searches and downloads are cached for the day. The model only ranks results; it cannot make a result count without the code check. Measured on 2026-11-04 with two real cases: *FTC v. Digital Forensics Corporation LLC* (N.D. Ohio 1:26-cv-02615, no PDF on CourtListener) found the complaint PDF on ftc.gov, verified by docket number and parties, then read in full (49 pages) and matched Medium to Matt Linton's CV. *Koester v. Palo Alto Networks* (N.D. Tex., an employment case) found nothing about the case, and nothing was kept. Cost: 4 Tavily searches, 2 CourtListener requests and 2 small model calls (about 5,000 tokens).
 
 Email drafts list every lawyer named in the complaint with a checkbox. Their addresses are found by code, not by the model ([profiles.py](../src/matching/profiles.py) `add_emails`): every address in the complaint is listed, and a lawyer gets the one whose user name contains their surname, preferring one that starts with their first initial, because signature blocks often list the addresses apart from the names. Lawyers for the party the draft is written for are checked; addresses no lawyer claims are offered unchecked under "Other addresses found in the complaint"; the user can add more. "Open in Gmail" opens a new message in the user's own Gmail with the chosen recipients, subject and text (Gmail adds their signature); "Open in Mail app" does the same with a `mailto:` link; nothing is sent automatically. On five complaints checked by hand, all 14 lawyers got the right address. Checks saved before this got their addresses with `python -m src.matching.cloud --dotenv add-emails` (re-reads the complaint PDFs from public storage; no model call).
 

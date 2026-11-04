@@ -25,7 +25,7 @@ from pathlib import Path
 
 from src.llm.client import LLMError
 from src.store.db import StoreError
-from src.matching.run import Model, make_search, run
+from src.matching.run import Model, make_search, make_web, run
 
 RUN_ID = r"\d{8}-\d{6}-[0-9a-f]{6}"
 
@@ -134,7 +134,8 @@ class Jobs:
             search = make_search(self.env, self.data_dir, status.get("days", 365), self.ledger) if status.get("find") else None
             experts = run(model, [folder / "cv.pdf"], [] if daily else self.cases, self.base, self.limit, log, search,
                           self.keep, self.data_dir / "pdfs", cv_name=status["cv"],
-                          skip=self.shown(status["cv"]) if daily else ())
+                          skip=self.shown(status["cv"]) if daily else (),
+                          web=make_web(self.env, self.data_dir) if search else None)
             write_json(folder / "result.json", experts)
             status.update(state="done", stats=model.stats)
         except LLMError as exc:
