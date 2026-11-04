@@ -25,7 +25,7 @@ from pathlib import Path
 
 from src.llm.client import LLMError
 from src.store.db import StoreError
-from src.matching.run import Model, make_search, make_web, run
+from src.matching.run import Model, make_search, make_web, prompt_version, run
 
 RUN_ID = r"\d{8}-\d{6}-[0-9a-f]{6}"
 
@@ -103,6 +103,7 @@ class Jobs:
             # Estimate: CV, then (search plan, 3 searches, screening), then profile + match per case.
             total = 1 + (5 if find else 0) + 2 * (len(cases) + (self.keep if find else 0))
             write_json(folder / "status.json", {"state": "queued", "cv": cv_name, "model": self.settings.model,
+                                                "prompt_version": prompt_version(),
                                                 "find": find, "daily": daily, "days": days if daily else 365,
                                                 "cases": len(cases), "total": total, "steps": [],
                                                 "error": None, "started": now(), "finished": None})

@@ -15,6 +15,12 @@ const back = document.getElementById("back");
 const whoLabel = document.getElementById("who");
 const guideLink = document.getElementById("guide");
 const cvsLink = document.getElementById("my-cvs");
+const feedbackLink = document.getElementById("feedback-link");
+// Feedback (migrations 016, 017); the same labels as src/matching/feedback.py.
+const REASONS = { not_relevant: "Not relevant to this expert", wrong_level: "Relevant, but the level is wrong",
+  misread: "The case was misread", contact_info: "Lawyer or email details are wrong", already_known: "Already known", other: "Other" };
+const LEVELS = { high: "High", medium: "Medium", low: "Low", none: "Not relevant" };
+const SOURCES = { courtlistener: "CourtListener PDF", "web complaint": "Complaint found on the web", "web web page": "Web page only" };
 // The daily check starts at 11:30 UTC (Supabase pg_cron); a backup run at 17:00 UTC covers a missed one.
 const DAILY_UTC = [11, 30];
 const BACKUP_UTC = [17, 0];
@@ -129,7 +135,8 @@ async function savedCvs() {
 // Top bar: "My CVs" appears once there is a saved CV; the current page's link is marked.
 function nav(view) {
   cvsLink.hidden = !(cache.me.admin || (cache.cvs && cache.cvs.length));
-  for (const [link, name] of [[cvsLink, "cvs"], [guideLink, "guide"]]) {
+  feedbackLink.hidden = !cache.me.admin;
+  for (const [link, name] of [[cvsLink, "cvs"], [feedbackLink, "feedback"], [guideLink, "guide"]]) {
     if (view === name) link.setAttribute("aria-current", "page");
     else link.removeAttribute("aria-current");
   }
@@ -327,6 +334,183 @@ async function cvsPage() {
         h("p", { class: "muted" }, "Upload one and keep “Save this CV for daily checks” ticked.")));
 }
 
+// ---- feedback ----
+
+function choices(options, selected, onPick) {
+  return h("div", { class: "controls tight" }, Object.entries(options).map(([value, label]) =>
+    h("button", { class: "chip", type: "button", "aria-pressed": String(selected === value), onclick: () => onPick(value) }, label)));
+}
+
+// "Was this case useful?" One tap saves the verdict; the details below it are optional.
+async function feedbackBox(runId, index) {
+  const box = h("section", { class: "card feedback" });
+  let saved = await rpc("matching_feedback_case", { access_key: accessKey(), which_run: runId, idx: index });
+  let draft = {};
+  const send = async (fields, message) => {
+    try {
+      saved = await rpc("matching_feedback_give", { access_key: accessKey(), which_run: runId, idx: index,
+        verdict: fields.verdict, reason: fields.reason || null, should_be: fields.should_be || null,
+        would_contact: Boolean(fields.would_contact), note: fields.note || null });
+      draft = {};
+      render(message);
+    } catch (error) {
+      render(error.message);
+    }
+  };
+  const render = (message) => {
+    const current = { ...(saved || {}), ...draft };
+    const pick = (field) => (value) => { draft[field] = current[field] === value ? null : value; render(); };
+    const note = h("textarea", { class: "note", placeholder: "Note (optional): what was wrong, or what made it useful",
+      maxlength: 1000, oninput: (event) => { draft.note = event.target.value; } }, current.note || "");
+    box.replaceChildren(...[
+      h("div", { class: "top" }, h("h3", {}, "Was this case useful?"),
+        h("div", { class: "buttons tight" },
+          h("button", { class: "btn light vote", type: "button", "aria-pressed": String(current.verdict === "up"),
+            onclick: () => send({ verdict: "up" }, "Saved: useful.") }, "👍 Useful"),
+          h("button", { class: "btn light vote", type: "button", "aria-pressed": String(current.verdict === "down"),
+            onclick: () => send({ verdict: "down" }, "Saved: not useful. Telling us why helps most.") }, "👎 Not right"))),
+      saved ? [
+        current.verdict === "up"
+          ? h("label", { class: "pick plain" }, h("input", { type: "checkbox", checked: Boolean(current.would_contact),
+              onchange: (event) => { draft.would_contact = event.target.checked; } }), h("span", {}, "I would contact the lawyers on this case"))
+          : [h("label", {}, "Why not?"), choices(REASONS, current.reason, pick("reason")),
+             h("label", {}, "What level should it be?"), choices(LEVELS, current.should_be, pick("should_be"))],
+        note,
+        h("div", { class: "buttons" }, h("button", { class: "btn", type: "button",
+          onclick: () => send({ ...saved, ...draft, note: note.value }, "Details saved.") }, "Save details"))] : null,
+      h("p", { class: "muted small" }, message || (saved ? `Your feedback from ${day(saved.at)}. You can change it any time.`
+        : "One tap is enough. Your feedback shows where the matching is wrong, so it can be improved."))]
+      .flat(Infinity).filter(Boolean));
+  };
+  render();
+  return box;
+}
+
+const pct = (value) => (value === null || value === undefined ? "–" : `${value}%`);
+
+function usefulRate(rows) {
+  return rows.length ? Math.round((100 * rows.filter((r) => r.verdict === "up").length) / rows.length) : null;
+}
+
+function grouped(rows, key) {
+  const groups = new Map();
+  for (const row of rows) {
+    const name = key(row) || "unknown";
+    if (!groups.has(name)) groups.set(name, []);
+    groups.get(name).push(row);
+  }
+  return [...groups].sort(([a], [b]) => a.localeCompare(b)).map(([name, list]) => ({ name, n: list.length, useful: usefulRate(list) }));
+}
+
+function bars(title, groups) {
+  if (!groups.length) return null;
+  return h("div", { class: "stat-group" }, h("h2", {}, title), groups.map((g) => h("div", { class: "bar-row" },
+    h("span", { class: "bar-label" }, g.name),
+    h("span", { class: "bar-track" }, h("span", { class: "bar-fill", style: `width:${g.useful || 0}%` })),
+    h("span", { class: "bar-value" }, `${pct(g.useful)} of ${g.n}`))));
+}
+
+const CSV_COLUMNS = ["at", "who", "cv", "case_name", "case_url", "run_id", "case_index", "kind", "verdict", "reason", "should_be",
+  "would_contact", "note", "current", "tier", "model_tier", "score", "direct", "related", "reasons", "case_type", "court", "filed",
+  "docket_number", "source", "web_source", "pages", "pages_read", "screen_relevant", "screen_reason", "expert", "daily",
+  "run_started", "model", "prompt_version"];
+
+function csvOf(rows) {
+  const cell = (value) => {
+    const text = value === null || value === undefined ? "" : String(value);
+    return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+  };
+  const lines = rows.map((r) => {
+    const snap = r.snapshot || {};
+    const flat = { ...r, ...snap, screen_relevant: snap.screen && snap.screen.relevant, screen_reason: snap.screen && snap.screen.reason };
+    return CSV_COLUMNS.map((c) => cell(flat[c])).join(",");
+  });
+  return [CSV_COLUMNS.join(","), ...lines].join("\r\n") + "\r\n";
+}
+
+function download(name, type, content) {
+  const link = h("a", { href: URL.createObjectURL(new Blob([content], { type })), download: name });
+  document.body.append(link);
+  link.click();
+  setTimeout(() => { URL.revokeObjectURL(link.href); link.remove(); }, 1000);
+}
+
+// Feedback page (admin only): how useful the results are, where they go wrong, and the raw rows.
+async function feedbackPage() {
+  back.hidden = false;
+  if (!cache.me.admin) return show(h("div", { class: "notice" }, h("h3", {}, "Only for admin links")));
+  const all = await rpc("matching_feedback_all", { access_key: accessKey() });
+  const p = params();
+  const days = Number(p.get("days")) || 30;
+  const who = p.get("who");
+  const cv = p.get("fcv");
+  const since = days < 9999 ? new Date(Date.now() - days * 86400000).toISOString() : "";
+  const rows = all.filter((r) => r.at >= since && (!who || r.who === who) && (!cv || r.cv === cv));
+  const rated = rows.filter((r) => r.kind === "rating" && r.current);
+  const down = rated.filter((r) => r.verdict === "down");
+  const emailed = new Set(rows.filter((r) => r.kind === "email").map((r) => `${r.run_id}:${r.case_index}:${r.who}`));
+  // Coverage: cases shown in the period (up to 60 days) that someone rated.
+  const shownCases = new Set((await feed(Math.min(days, 60))).flatMap((run) =>
+    run.experts.flatMap((e) => e.cases.map((c, i) => `${run.run_id}:${i}`))));
+  const shown = shownCases.size;
+  const ratedCases = new Set(rated.map((r) => `${r.run_id}:${r.case_index}`).filter((k) => shownCases.has(k)));
+  const filter = (name, value, options, label) => h("select", { class: "select", "aria-label": label,
+    onchange: (event) => go({ view: "feedback", days, who, fcv: cv, [name]: event.target.value || null }) },
+    options.map(([v, text]) => h("option", { value: v, selected: String(v) === String(value || "") }, text)));
+  const reasonCounts = Object.entries(REASONS).map(([k, label]) => [label, down.filter((r) => r.reason === k).length])
+    .concat([["No reason given", down.filter((r) => !r.reason).length]]).filter(([, n]) => n);
+  const levelPairs = new Map();
+  for (const r of rated.filter((x) => x.should_be)) {
+    const key = `${LEVELS[r.snapshot.tier] || r.snapshot.tier} → ${LEVELS[r.should_be]}`;
+    levelPairs.set(key, (levelPairs.get(key) || 0) + 1);
+  }
+  const attention = down.filter((r) => r.snapshot.tier === "high");
+  const stamp = new Date().toISOString().slice(0, 10);
+  const line = (r) => h("button", { class: "case", type: "button", onclick: () => go({ run: r.run_id, case: r.case_index }) },
+    h("div", { class: "top" },
+      h("span", { class: `tier ${r.kind === "email" ? "medium" : r.verdict === "up" ? "high" : "low"}` },
+        r.kind === "email" ? `✉ ${r.verdict}` : r.verdict === "up" ? "👍 Useful" : "👎 Not right"),
+      r.snapshot.tier ? tierTag(r.snapshot.tier) : null,
+      h("span", { class: "score" }, meta(day(r.at), r.who, r.current ? null : "replaced later"))),
+    h("div", { class: "name" }, r.case_name),
+    h("div", { class: "muted small" }, meta(r.cv, SOURCES[r.snapshot.source], r.reason && REASONS[r.reason],
+      r.should_be && `should be ${LEVELS[r.should_be]}`, r.would_contact && "would contact")),
+    r.note ? h("div", { class: "why small" }, `“${r.note}”`) : null);
+  show(
+    h("div", { class: "headline" }, h("h1", {}, "Feedback"),
+      h("div", { class: "buttons tight" },
+        h("button", { class: "btn", type: "button", onclick: () => download(`expert-match-feedback-${stamp}.csv`, "text/csv", csvOf(all)) }, "Download CSV"),
+        h("button", { class: "btn light", type: "button", onclick: () => download(`expert-match-feedback-${stamp}.json`, "application/json",
+          JSON.stringify(all, null, 1)) }, "Download JSON"))),
+    h("p", { class: "muted small intro" }, "Ratings from everyone's case pages. A newer rating of a case replaces the same person's older one; " +
+      "downloads include every row, history too, with what the system decided at the time."),
+    h("div", { class: "controls" },
+      filter("days", days, [[7, "Last 7 days"], [30, "Last 30 days"], [90, "Last 90 days"], [9999, "All time"]], "Period"),
+      filter("who", who, [["", "Everyone"], ...[...new Set(all.map((r) => r.who))].sort().map((w) => [w, w])], "Person"),
+      filter("fcv", cv, [["", "All CVs"], ...[...new Set(all.map((r) => r.cv))].sort().map((c) => [c, c])], "CV")),
+    h("div", { class: "tiles" },
+      [[rated.length, "ratings"], [pct(usefulRate(rated)), "useful"], [rated.filter((r) => r.would_contact).length, "would contact"],
+       [emailed.size, "drafts opened"], [shown ? pct(Math.round((100 * ratedCases.size) / shown)) : "–", `of ${shown} cases shown rated`]]
+        .map(([value, label]) => h("div", { class: "tile" }, h("b", {}, String(value)), h("span", {}, label)))),
+    rated.length ? null : h("div", { class: "notice" }, h("h3", {}, "No ratings in this period"),
+      h("p", { class: "muted" }, "Ratings appear here once people use 👍 / 👎 on a case page.")),
+    attention.length ? h("div", { class: "notice attention" }, h("h3", {}, `Needs attention: High but not useful (${attention.length})`),
+      h("p", { class: "muted small" }, "The system was most sure about these and was wrong. Read each one."), attention.map(line)) : null,
+    bars("By level", grouped(rated, (r) => LEVELS[r.snapshot.tier] || r.snapshot.tier)),
+    bars("By source of the complaint", grouped(rated, (r) => SOURCES[r.snapshot.source] || r.snapshot.source)),
+    reasonCounts.length ? h("div", { class: "stat-group" }, h("h2", {}, "Why not useful"),
+      reasonCounts.map(([label, n]) => h("div", { class: "bar-row" }, h("span", { class: "bar-label" }, label),
+        h("span", { class: "bar-track" }, h("span", { class: "bar-fill down", style: `width:${Math.round((100 * n) / down.length)}%` })),
+        h("span", { class: "bar-value" }, String(n))))) : null,
+    levelPairs.size ? h("div", { class: "stat-group" }, h("h2", {}, "Level given → level it should be"),
+      h("p", { class: "small" }, [...levelPairs].map(([k, n]) => `${k} (${n})`).join(" · "))) : null,
+    bars("By version (model / prompts)", grouped(rated, (r) => `${r.snapshot.model || "?"} / ${r.snapshot.prompt_version || "before versions"}`)),
+    bars("By person", grouped(rated, (r) => r.who)),
+    bars("By CV", grouped(rated, (r) => r.cv)),
+    rows.length ? h("div", { class: "section" }, h("h2", {}, `All feedback in this period (${rows.length})`),
+      h("div", { class: "card" }, rows.slice(0, 200).map(line))) : null);
+}
+
 // Local time (with the time zone) of a daily UTC time, plus `later` minutes.
 function atLocal([hour, minute], later = 0) {
   const now = new Date();
@@ -420,6 +604,16 @@ function guidePage() {
         h("li", {}, "Tap “Open in Gmail” (your Gmail adds your signature), “Open in Mail app”, or “Copy”. " +
           "Nothing is sent until you send it yourself."))),
 
+    guideSection("Giving feedback",
+      h("p", {}, "At the top of every case: ", h("b", {}, "👍 Useful"), " or ", h("b", {}, "👎 Not right"), ". One tap is enough."),
+      h("ul", {},
+        h("li", {}, "After 👎 you can say why (not relevant, wrong level, misread, wrong lawyer details, already known) and what level it should be."),
+        h("li", {}, "After 👍 you can tick “I would contact the lawyers”."),
+        h("li", {}, "A short note helps most: what was wrong, or what made it useful."),
+        h("li", {}, "You can change your answer any time; the latest one counts.")),
+      h("p", { class: "muted small" }, "Opening or copying an email draft is noted too, as a sign the case was worth contacting someone about. " +
+        "Feedback is used only to measure and improve the matching. It is kept when a CV is deleted, but contains no part of the CV.")),
+
     guideSection("Managing your CVs",
       h("p", {}, link("My CVs", { view: "cvs" }), " (in the top bar) lists the CVs you saved."),
       h("ul", {},
@@ -510,7 +704,7 @@ function recipientRow(address, label, note, checked) {
     note ? h("span", { class: "muted small" }, note) : null));
 }
 
-function emailBox(match, profile) {
+function emailBox(match, profile, used = () => {}) {
   const mail = match.email;
   if (!mail) return h("p", { class: "muted" }, "No draft: drafts are written for High and Medium matches only.");
   const counsel = profile.counsel || [];
@@ -531,12 +725,16 @@ function emailBox(match, profile) {
     return [...new Set(chosen)];
   };
   const enc = encodeURIComponent;
-  const gmail = () => window.open(`https://mail.google.com/mail/?view=cm&fs=1&to=${enc(recipients().join(","))}` +
-    `&su=${enc(subject.value)}&body=${enc(body.value)}`, "_blank", "noopener");
-  const mailApp = () => { location.href = `mailto:${recipients().map(enc).join(",")}?subject=${enc(subject.value)}&body=${enc(body.value)}`; };
+  const gmail = () => {
+    used("gmail");
+    window.open(`https://mail.google.com/mail/?view=cm&fs=1&to=${enc(recipients().join(","))}` +
+      `&su=${enc(subject.value)}&body=${enc(body.value)}`, "_blank", "noopener");
+  };
+  const mailApp = () => { used("mail"); location.href = `mailto:${recipients().map(enc).join(",")}?subject=${enc(subject.value)}&body=${enc(body.value)}`; };
   const copy = async () => {
     try {
       await navigator.clipboard.writeText(`To: ${recipients().join(", ")}\nSubject: ${subject.value}\n\n${body.value}`);
+      used("copy");
       status.textContent = "Copied.";
     } catch (e) { status.textContent = "Copy failed; select the text instead."; }
   };
@@ -572,6 +770,7 @@ async function casePage(id, index) {
       ? `CourtListener has no copy of this complaint. The search agent found it on ${c.web_source} and checked it is this case (${c.web_check}).`
       : `CourtListener has no copy of this complaint. This reading is from a web page on ${c.web_source} (checked: ${c.web_check}), ` +
         "not the complaint itself, so the level is at most Medium.") : null,
+    await feedbackBox(id, index),
     h("div", { class: "section" }, h("h2", {}, "Why it fits"), h("p", {}, match.summary || "")),
     profile ? h("div", { class: "section" }, h("h2", {}, "The case"),
       h("p", {}, profile.summary),
@@ -591,7 +790,10 @@ async function casePage(id, index) {
       h("ul", {}, profile.counsel.map((x) => h("li", {}, h("b", {}, x.name), x.firm ? `, ${x.firm}` : "",
         x.email ? h("span", {}, " · ", h("a", { href: `mailto:${x.email}` }, x.email)) : null,
         h("span", { class: "muted" }, ` for ${x.party} (p. ${x.page})`))))) : null,
-    h("div", { class: "section" }, h("h2", {}, "Email draft"), emailBox(match, profile || {})),
+    h("div", { class: "section" }, h("h2", {}, "Email draft"), emailBox(match, profile || {}, (action) => {
+      // Opening or copying a draft says the case was worth contacting someone about; it is recorded quietly.
+      rpc("matching_feedback_give", { access_key: accessKey(), which_run: id, idx: index, verdict: action }).catch(() => {});
+    })),
     h("p", { class: "muted small section" }, "Summaries and reasons are written by AI. Every quote shown was checked against the CV or the complaint."));
 }
 
@@ -612,6 +814,7 @@ async function route() {
     else if (p.get("view") === "upload") uploadPage();
     else if (p.get("view") === "cvs") await cvsPage();
     else if (p.get("view") === "guide") guidePage();
+    else if (p.get("view") === "feedback") await feedbackPage();
     else await listPage();
   } catch (error) {
     show(problem(error));
@@ -621,5 +824,6 @@ async function route() {
 back.addEventListener("click", () => (history.length > 1 ? history.back() : go({})));
 guideLink.addEventListener("click", (event) => { event.preventDefault(); go({ view: "guide" }); });
 cvsLink.addEventListener("click", (event) => { event.preventDefault(); go({ view: "cvs" }); });
+feedbackLink.addEventListener("click", (event) => { event.preventDefault(); go({ view: "feedback" }); });
 window.addEventListener("hashchange", route);
 route();

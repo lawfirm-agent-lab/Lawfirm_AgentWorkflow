@@ -15,6 +15,7 @@ python -m src.matching.cloud --dotenv new-key --label advisor [--admin]       ma
 python -m src.matching.cloud --dotenv keys | revoke-key advisor               list or turn off website links
 python -m src.matching.cloud --dotenv add-emails                              add lawyers' addresses to older checks
 python -m src.matching.cloud --dotenv set-dispatch-token                      let uploads start cloud runs (Vault)
+python -m src.matching.cloud --dotenv feedback [--csv F] [--json F]          feedback statistics and exports
 
 The results website (site/, on GitHub Pages) reads the daily checks through database functions
 that check an access key (migration 007). Only the key's SHA-256 is stored; new-key prints the
@@ -138,6 +139,16 @@ class CloudRuns:
                 "result_json=excluded.result_json, trace_json=excluded.trace_json, saved_at=excluded.saved_at",
                 (folder.name, status["cv"], status["state"], status["started"], status.get("finished"),
                  files["status_json"], files["result_json"], files["trace_json"], now(), owner))
+
+    def feedback(self):
+        """Every feedback row, history included, newest first: the shape matching_feedback_all returns."""
+        with self.session() as store:
+            rows = store.execute("SELECT * FROM matching_feedback ORDER BY created_at DESC, feedback_id").fetchall()
+        return [{"id": r["feedback_id"], "who": r["owner"], "run_id": r["run_id"], "case_index": r["case_index"],
+                 "case_url": r["case_url"], "case_name": r["case_name"], "cv": r["cv_name"], "kind": r["kind"],
+                 "verdict": r["verdict"], "reason": r["reason"], "should_be": r["should_be"],
+                 "would_contact": bool(r["would_contact"]), "note": r["note"], "current": bool(r["current"]),
+                 "at": r["created_at"], "snapshot": json.loads(r["snapshot_json"] or "{}")} for r in rows]
 
     def new_key(self, label, admin=False):
         """Make a website access key for the person `label`; returns it. Only its hash is saved.
@@ -283,6 +294,9 @@ def main(argv=None):
     revoke.add_argument("label")
     commands.add_parser("add-emails", help="Add lawyers' email addresses to checks saved before they were found")
     commands.add_parser("set-dispatch-token", help="Store GITHUB_DISPATCH_TOKEN in Supabase Vault (never printed)")
+    feedback = commands.add_parser("feedback", help="Feedback statistics from the website, with optional exports")
+    feedback.add_argument("--csv", type=Path, help="Also write every feedback row to this CSV file")
+    feedback.add_argument("--json", type=Path, help="Also write every feedback row, with its snapshot, to this JSON file")
     args = parser.parse_args(argv)
     from src.matching.run import ROOT
     if args.dotenv:
@@ -336,6 +350,16 @@ def main(argv=None):
             print("Stored the GitHub token in Supabase Vault as matching_github_token.")
         elif args.command == "revoke-key":
             print(f"Turned off {cloud.revoke_keys(args.label)} link(s) labelled {args.label}.")
+        elif args.command == "feedback":
+            from src.matching import feedback
+            rows = cloud.feedback()
+            print(feedback.report(feedback.summarize(rows)))
+            if args.csv:
+                args.csv.write_text(feedback.csv_text(rows), encoding="utf-8")
+                print(f"Wrote {len(rows)} rows to {args.csv}")
+            if args.json:
+                args.json.write_text(json.dumps(rows, ensure_ascii=False, indent=1), encoding="utf-8")
+                print(f"Wrote {len(rows)} rows to {args.json}")
         else:
             print(f"Copied {cloud.pull(ROOT / 'data' / 'matching' / 'runs')} new daily checks from the cloud.")
     except StoreError as exc:

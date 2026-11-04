@@ -82,11 +82,11 @@ class PostgreSQLSiteFunctionTests(unittest.TestCase):
         from tests.test_web_daily import daily_run
         self.store = PipelineStore(database_url=URL)
         self.addCleanup(self.store.close)
-        self.store.execute('TRUNCATE matching_requests, matching_access_keys, matching_runs, matching_cvs')
+        self.store.execute('TRUNCATE matching_requests, matching_access_keys, matching_runs, matching_cvs, matching_feedback')
         self.cloud = CloudRuns(self.store)
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
-        root = Path(directory.name)
+        root = self.root = Path(directory.name)
         daily_run(root, '20261103-090000-aaaaaa', 'jane.pdf', datetime.now(timezone.utc).isoformat(timespec='seconds'),
                   ['https://cl/docket/1/', 'https://cl/docket/2/'])
         self.cloud.save_run(root / '20261103-090000-aaaaaa')
@@ -177,6 +177,52 @@ class PostgreSQLSiteFunctionTests(unittest.TestCase):
         self.call('SELECT matching_cv_active(?, ?, ?)', alice, 'cv.pdf', False)
         self.call('SELECT matching_cv_delete(?, ?)', self.key, 'cv-2.pdf')  # The admin can manage anyone's.
         self.assertEqual([n for n, _ in self.cloud.cvs()], [])
+
+    def test_a_new_rating_replaces_the_earlier_one_and_history_is_kept(self):
+        run = '20261103-090000-aaaaaa'
+        first = self.call('SELECT matching_feedback_give(?, ?, ?, ?)', self.key, run, 0, 'up')
+        self.assertEqual((first['verdict'], first['would_contact']), ('up', False))
+        second = self.call('SELECT matching_feedback_give(?, ?, ?, ?, ?, ?, ?, ?)', self.key, run, 0, 'down',
+                           'not_relevant', 'low', False, '  Pro se suit, no real technical issue.  ')
+        self.assertEqual((second['verdict'], second['reason'], second['should_be'], second['note']),
+                         ('down', 'not_relevant', 'low', 'Pro se suit, no real technical issue.'))
+        self.call('SELECT matching_feedback_give(?, ?, ?, ?)', self.key, run, 0, 'gmail')  # Not a rating.
+        self.assertEqual(self.call('SELECT matching_feedback_case(?, ?, ?)', self.key, run, 0)['verdict'], 'down')
+        rows = self.call('SELECT matching_feedback_all(?)', self.key)
+        self.assertEqual([(r['kind'], r['verdict'], r['current']) for r in rows],
+                         [('email', 'gmail', True), ('rating', 'down', True), ('rating', 'up', False)])
+        snap = rows[1]['snapshot']
+        self.assertEqual((rows[1]['case_name'], rows[1]['cv'], rows[1]['who']), ('Case 1', 'jane.pdf', 'test'))
+        self.assertEqual((snap['tier'], snap['source'], snap['expert'], snap['daily']), ('high', 'courtlistener', 'Jane Doe', True))
+        self.assertIs(snap['screen']['relevant'], True)
+        self.assertEqual(self.cloud.feedback(), rows)  # The feedback command reads the same rows.
+        # The snapshot stays after the run is deleted.
+        self.store.execute('DELETE FROM matching_runs')
+        self.assertEqual(self.call('SELECT matching_feedback_all(?)', self.key)[1]['snapshot']['tier'], 'high')
+
+    def test_feedback_values_and_access_are_checked(self):
+        from src.store.db import StoreError
+        from tests.test_web_daily import daily_run
+        run = '20261103-090000-aaaaaa'
+        bad = [(run, 0, 'maybe', None, None, ''), (run, 0, 'down', 'bored', None, ''), (run, 0, 'down', None, 'top', ''),
+               (run, 1, 'up', None, None, ''), (run, -1, 'up', None, None, ''), (run, 0, 'up', None, None, 'x' * 1001),
+               ('no-such-run', 0, 'up', None, None, '')]
+        for which, idx, verdict, reason, level, note in bad:
+            with self.subTest(verdict=verdict, idx=idx), self.assertRaises(StoreError):
+                self.call('SELECT matching_feedback_give(?, ?, ?, ?, ?, ?, ?, ?)', self.key, which, idx, verdict,
+                          reason, level, False, note)
+        alice = self.cloud.new_key('alice')
+        with self.assertRaises(StoreError):  # The admin's run is not hers.
+            self.call('SELECT matching_feedback_give(?, ?, ?, ?)', alice, run, 0, 'up')
+        with self.assertRaises(StoreError):  # Only an admin reads everyone's feedback.
+            self.call('SELECT matching_feedback_all(?)', alice)
+        daily_run(self.root, '20261104-090000-bbbbbb', 'alice.pdf', '2026-11-04T09:00:00+00:00', ['https://cl/docket/9/'])
+        self.cloud.save_run(self.root / '20261104-090000-bbbbbb', owner='alice')
+        given = self.call('SELECT matching_feedback_give(?, ?, ?, ?, ?, ?, ?, ?)', alice, '20261104-090000-bbbbbb', 0,
+                          'up', None, None, True, None)
+        self.assertIs(given['would_contact'], True)
+        self.assertIsNone(self.call('SELECT matching_feedback_case(?, ?, ?)', self.key, '20261104-090000-bbbbbb', 0))
+        self.assertEqual([r['who'] for r in self.call('SELECT matching_feedback_all(?)', self.key)], ['alice'])
 
 
 if __name__ == '__main__':

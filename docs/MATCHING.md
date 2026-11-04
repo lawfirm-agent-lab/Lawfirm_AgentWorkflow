@@ -21,7 +21,7 @@ Expert CV (PDF)
 │   └── model screens all candidates (case_screen_v1): on their first pages, or on the case name
 │       and docket text when there is no PDF; relevant / not relevant / unclear.
 │       Relevant ones with a PDF are kept, at most 3 of one case type first, up to 6.
-│       Relevant ones without a PDF go to the search agent (up to 3 per CV): a docket request
+│       Relevant ones without a PDF, then unclear ones, go to the search agent (up to 4 per CV): a docket request
 │       for the docket number, 2 web searches (Tavily), the model picks likely results, code
 │       verifies them (both parties + docket number or filing year). A verified complaint PDF is
 │       read like the others; a verified web page alone is read but capped at Medium; otherwise
@@ -118,7 +118,22 @@ The token: a fine-grained GitHub personal access token for this repository only,
 
 **My CVs** (website page, linked in the top bar once a CV is saved, and commands): a saved CV can be stopped (no more daily checks; its past results stay; it can be resumed) or deleted (the CV, every daily check and upload run made from it, and its finished upload requests; copies already on someone's computer in `data/matching/runs` are not touched). Database functions `matching_cvs`, `matching_cv_active` and `matching_cv_delete` ([010_matching_cv_admin.postgres.sql](../sql/migrations/010_matching_cv_admin.postgres.sql)) check the access key like the others; on the command line: `list`, `stop-cv`, `resume-cv`, `delete-cv`. Each person can do this only for their own CVs; an admin link for any.
 
-**Search agent** ([src/matching/elsewhere.py](../src/matching/elsewhere.py), prompt `elsewhere_pick_v1`): complaints judged relevant but without a PDF on CourtListener, at most 3 per CV and run. It runs only when `TAVILY_API_KEY` is set (`.env` locally, a GitHub secret in the cloud); without it the run is unchanged.
+**Feedback** (website; [016_matching_feedback.sql](../sql/migrations/016_matching_feedback.sql), [017_matching_feedback_functions.postgres.sql](../sql/migrations/017_matching_feedback_functions.postgres.sql), [src/matching/feedback.py](../src/matching/feedback.py)):
+
+- **Rating a case**: every case page has 👍 Useful / 👎 Not right; one tap saves it. After 👎, the person can pick a reason (not relevant, wrong level, misread, wrong lawyer details, already known, other) and the level it should have been. After 👍, they can tick "would contact the lawyers". A note is optional on both.
+- **One current rating, history kept**: a newer rating of a case replaces the same person's older one, which stays in the table with `current = 0`.
+- **Email drafts**: opening a draft in Gmail or a mail app, or copying it, is recorded as an "email" row.
+- **Snapshot**: each row stores what the system decided, built in the database from the stored run, not sent by the page: level, model's level, score, evidence counts, source (CourtListener, or a complaint or web page the search agent found), pages read, the screening verdict, the model and `prompt_version`. `prompt_version` is a fingerprint of the matching prompts, saved on every run since this change. The snapshot is kept after a run or CV is deleted.
+- **Who sees what**: a person rates only results they can see. Only an admin link reads everyone's feedback, on the **Feedback** page in the top bar. That page has period, person and CV filters; totals; a "needs attention" list (High but not useful); usefulness by level, source, version, person and CV; the reasons; level given vs level it should be; the rows; and CSV or JSON downloads of every row.
+- **From the command line**: `python -m src.matching.cloud --dotenv feedback [--csv F] [--json F]` prints the same figures and writes the same exports.
+- **Using the rows**: they are the test set for prompt or model changes. Re-run the rated cases with the new version, and compare against the ratings before switching.
+
+**Unclear cases**: screening calls a case "unclear" when its text cannot tell. Both kinds were dropped before; now:
+
+- **Scanned complaints**: a complaint whose first pages have under 200 characters of text is read with OCR (3 pages, at most 8 per CV) before screening, so screening sees words instead of a blank.
+- **No PDF**: after the relevant ones, the search agent also looks for the complaints without a PDF that were judged unclear (at most 4 cases per CV in all). One it finds a verified copy of is screened again on that copy (`first_screen` keeps the first verdict); if it is now relevant, it is read and matched like the others.
+
+**Search agent** ([src/matching/elsewhere.py](../src/matching/elsewhere.py), prompt `elsewhere_pick_v1`): complaints without a PDF on CourtListener that screening judged relevant, then those it judged unclear, at most 4 per CV and run. It runs only when `TAVILY_API_KEY` is set (`.env` locally, a GitHub secret in the cloud); without it the run is unchanged.
 
 1. One CourtListener docket request adds the docket number and court (counted in the same budget).
 2. Two Tavily searches with strong identifiers only: `"<defendant>" <plaintiff> complaint <year>` and `"<docket number>" complaint`. Only public case names and numbers are sent; never the CV.
