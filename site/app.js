@@ -16,6 +16,7 @@ const whoLabel = document.getElementById("who");
 const guideLink = document.getElementById("guide");
 const cvsLink = document.getElementById("my-cvs");
 const feedbackLink = document.getElementById("feedback-link");
+const logsLink = document.getElementById("logs-link");
 // Feedback (migrations 016, 017); the same labels as src/matching/feedback.py.
 const REASONS = { not_relevant: "Not relevant to this expert", wrong_level: "Relevant, but the level is wrong",
   misread: "The case was misread", contact_info: "Lawyer or email details are wrong", already_known: "Already known", other: "Other" };
@@ -135,8 +136,8 @@ async function savedCvs() {
 // Top bar: "My CVs" appears once there is a saved CV; the current page's link is marked.
 function nav(view) {
   cvsLink.hidden = !(cache.me.admin || (cache.cvs && cache.cvs.length));
-  feedbackLink.hidden = !cache.me.admin;
-  for (const [link, name] of [[cvsLink, "cvs"], [feedbackLink, "feedback"], [guideLink, "guide"]]) {
+  feedbackLink.hidden = logsLink.hidden = !cache.me.admin;
+  for (const [link, name] of [[cvsLink, "cvs"], [feedbackLink, "feedback"], [logsLink, "logs"], [guideLink, "guide"]]) {
     if (view === name) link.setAttribute("aria-current", "page");
     else link.removeAttribute("aria-current");
   }
@@ -511,6 +512,177 @@ async function feedbackPage() {
       h("div", { class: "card" }, rows.slice(0, 200).map(line))) : null);
 }
 
+// ---- logs (admin only): what ran, when, how long, what it cost and where it failed ----
+
+function stamp(iso) {
+  return iso ? new Date(/[zZ]|[+-]\d\d:\d\d$/.test(iso) ? iso : `${iso}Z`) : null;
+}
+
+function clock(iso) {
+  const at = stamp(iso);
+  return at ? at.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }) : "–";
+}
+
+function took(from, to) {
+  const a = stamp(from), b = stamp(to);
+  if (!a || !b) return "–";
+  const s = Math.max(0, Math.round((b - a) / 1000));
+  return s >= 60 ? `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s` : `${s}s`;
+}
+
+function localDay(iso) {
+  const at = stamp(iso);
+  return at ? at.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" }) : "";
+}
+
+function stateTag(state) {
+  const look = { done: ["high", "Done"], failed: ["low", "Failed"], running: ["medium", "Running"], queued: ["medium", "Waiting"],
+    succeeded: ["high", "Fired"] }[state] || ["low", state];
+  return h("span", { class: `tier ${look[0]}` }, look[1]);
+}
+
+function usageLine(run) {
+  const stats = run.stats || {}, usage = run.usage || {};
+  return meta(stats.calls !== undefined && `${stats.calls} AI calls${stats.cached ? ` (+${stats.cached} cached)` : ""}`,
+    stats.input_tokens !== undefined && `${Math.round((stats.input_tokens + stats.output_tokens) / 1000)}k tokens`,
+    usage.courtlistener !== undefined && `${usage.courtlistener} CourtListener`,
+    usage.web_searches !== undefined && `${usage.web_searches} web searches`);
+}
+
+function runRow(run) {
+  const tiers = Object.entries(run.tiers || {}).map(([t, n]) => `${n} ${LEVELS[t] || t}`).join(", ");
+  return h("button", { class: "case", type: "button", onclick: () => go({ view: "logs", log: run.run_id }) },
+    h("div", { class: "top" }, stateTag(run.state), h("span", { class: "score" },
+      meta(clock(run.started), run.daily ? "daily check" : "upload", took(run.started, run.finished)))),
+    h("div", { class: "name" }, `${run.cv}`, h("span", { class: "muted small" }, ` · ${run.owner || "admin"}`)),
+    h("div", { class: "muted small" }, meta(`${run.candidates} found`, `${run.cases} read${tiers ? ` (${tiers})` : ""}`, usageLine(run))),
+    run.error ? h("div", { class: "error small" }, run.error) : null);
+}
+
+async function logsPage() {
+  back.hidden = false;
+  if (!cache.me.admin) return show(h("div", { class: "notice" }, h("h3", {}, "Only for admin links")));
+  const p = params();
+  if (p.get("log")) return logRunPage(p.get("log"));
+  const days = Number(p.get("days")) || 7;
+  const only = p.get("only") || "all";
+  const data = await rpc("matching_log_overview", { access_key: accessKey(), days });
+  const dayKeys = [...new Set([...data.runs.map((r) => r.started), ...data.schedule.map((s) => s.at),
+    ...data.requests.map((q) => q.created), ...data.pipeline.map((x) => x.started)].map(localDay))];
+  const onDay = (list, field, key) => list.filter((x) => localDay(x[field]) === key);
+  const dayCard = (key) => {
+    const fired = onDay(data.schedule, "at", key);
+    const daily = onDay(data.runs, "started", key).filter((r) => r.daily);
+    const uploads = onDay(data.requests, "created", key);
+    const pipeline = onDay(data.pipeline, "started", key);
+    const accepted = onDay(data.dispatches, "at", key);
+    const checked = new Set(daily.map((r) => r.cv));
+    const dayEnd = new Date(stamp(daily[0] ? daily[0].started : fired[0] ? fired[0].at : null) || 0);
+    const missing = daily.length || fired.length ? data.cvs.filter((c) => c.active && !checked.has(c.name)
+      && stamp(c.saved_at) < dayEnd) : [];
+    const failedPipes = pipeline.filter((x) => x.status !== "ok");
+    const line = (icon, text, extra) => h("div", { class: "log-line" }, h("span", { class: "log-icon" }, icon), h("div", {}, text, extra || null));
+    return h("section", { class: "card" }, h("h3", {}, key),
+      fired.length ? fired.map((s) => line(s.status === "succeeded" ? "✅" : "❌", `${clock(s.at)} · daily schedule ${s.status === "succeeded" ? "fired" : s.status}`,
+        s.status !== "succeeded" && s.message ? h("div", { class: "error small" }, s.message) : null))
+        : line("·", h("span", { class: "muted" }, data.schedule.length ? "No schedule firing this day" : "Schedule history not available")),
+      accepted.length ? line(accepted.every((d) => d.status >= 200 && d.status < 300) ? "✅" : "⚠",
+        `GitHub runs requested: ${accepted.length} (${[...new Set(accepted.map((d) => `HTTP ${d.status ?? "no answer"}`))].join(", ")})`) : null,
+      daily.length ? line(daily.every((r) => r.state === "done") ? "✅" : "❌", `Daily checks: ${daily.length}`,
+        h("div", { class: "log-sub" }, daily.map(runRow))) : null,
+      missing.length ? line("⚠", `Not checked: ${missing.map((c) => c.name).join(", ")}`) : null,
+      uploads.length ? line(uploads.every((q) => q.state !== "failed") ? "✅" : "❌", `Uploads: ${uploads.length}`,
+        h("div", { class: "log-sub" }, uploads.map((q) => h("div", { class: "small log-upload" },
+          stateTag(q.state), ` ${clock(q.created)} · ${q.cv} · ${q.owner || "admin"} `,
+          q.run_id ? h("a", { href: "#", onclick: (e) => { e.preventDefault(); go({ view: "logs", log: q.run_id }); } }, "details") : null,
+          q.error ? h("div", { class: "error" }, q.error) : null)))) : null,
+      pipeline.length ? line(failedPipes.length ? "⚠" : "✅", `Docket monitor: ${pipeline.length} run${pipeline.length === 1 ? "" : "s"}, ${failedPipes.length} failed`,
+        failedPipes.length ? h("div", { class: "log-sub small" }, failedPipes.map((x) => h("div", {}, `${clock(x.started)}: `,
+          Object.entries((x.report || {}).stages || {}).filter(([, s]) => s.status === "failed")
+            .map(([name, s]) => `${name} – ${s.error || JSON.stringify(s.failed)}`).join("; ") || x.status))) : null) : null);
+  };
+  const runs = data.runs.filter((r) => only === "all" || (only === "daily" && r.daily) || (only === "uploads" && !r.daily)
+    || (only === "failed" && r.state !== "done"));
+  show(
+    h("h1", {}, "Logs"),
+    h("p", { class: "muted small intro" }, "What ran in the cloud, when, how long it took, what it used and where it failed. " +
+      "Open a run for every step and every AI call."),
+    h("div", { class: "controls" }, h("span", { class: "muted small" }, "Show the last"),
+      [1, 2, 7, 30].map((d) => h("button", { class: "chip", type: "button", "aria-pressed": String(d === days),
+        onclick: () => go({ view: "logs", days: d, only }) }, d === 1 ? "24 hours" : `${d} days`))),
+    dayKeys.length ? dayKeys.map(dayCard) : h("div", { class: "notice" }, h("h3", {}, "Nothing ran in this period")),
+    h("div", { class: "section" }, h("h2", {}, `All matching runs (${runs.length})`),
+      h("div", { class: "controls" }, Object.entries({ all: "All", daily: "Daily", uploads: "Uploads", failed: "Failed" }).map(([k, label]) =>
+        h("button", { class: "chip", type: "button", "aria-pressed": String(k === only), onclick: () => go({ view: "logs", days, only: k }) }, label))),
+      runs.length ? h("div", { class: "card" }, runs.map(runRow)) : h("p", { class: "muted" }, "None.")),
+    h("p", { class: "muted small section" }, "The daily schedule's history comes from Supabase (pg_cron). GitHub's answers to run requests are kept " +
+      "for about 6 hours. Each run's GitHub Actions log is linked from its page."));
+}
+
+function pre(value, limit = 20000) {
+  let text = typeof value === "string" ? value : JSON.stringify(value, null, 1);
+  try { if (typeof value === "string" && /^\s*[[{]/.test(value)) text = JSON.stringify(JSON.parse(value), null, 1); } catch (e) { /* not JSON */ }
+  const cut = text.length > limit;
+  return h("pre", { class: "log-pre" }, cut ? `${text.slice(0, limit)}\n… ${text.length - limit} more characters` : text);
+}
+
+function traceEntry(t, n) {
+  const tokens = t.tokens ? `${t.tokens[0]} → ${t.tokens[1]} tokens` : null;
+  let body;
+  if (t.step === "courtlistener_search" || t.step === "web_search") {
+    body = [h("div", { class: "small" }, h("b", {}, "Query: "), t.query || ""), t.error ? h("div", { class: "error small" }, t.error) : null,
+      h("ol", { class: "small" }, (t.results || []).map((r) => h("li", {}, r.title || r.name, " ",
+        h("span", { class: "muted" }, meta(r.court, r.filed, r.url)))))];
+  } else if (t.step === "extract_cv") {
+    body = (t.pages || []).map((page) => h("div", {}, h("div", { class: "small muted" }, `Page ${page.page} · ${page.method}`), pre(page.text, 4000)));
+  } else {
+    body = [h("div", { class: "small muted" }, "Input (what the AI saw)"), pre(t.input),
+      h("div", { class: "small muted" }, "Output (what it answered)"), pre(t.output), t.error ? h("div", { class: "error small" }, t.error) : null];
+  }
+  return h("details", { class: "log-trace" },
+    h("summary", {}, h("b", {}, `${n}. ${t.step}`), " ", t.label || "", h("span", { class: "muted small" },
+      ` ${meta(tokens, t.cached ? "cached" : null, t.error ? "error" : null)}`)), body);
+}
+
+async function logRunPage(id) {
+  const data = await rpc("matching_log_run", { access_key: accessKey(), which_run: id });
+  if (!data) return show(h("div", { class: "notice" }, h("h3", {}, "Run not found")));
+  const status = data.status || {};
+  const steps = status.steps || [];
+  let previous = status.started;
+  show(
+    h("p", { class: "muted small" }, h("a", { href: "#", onclick: (e) => { e.preventDefault(); go({ view: "logs" }); } }, "‹ All logs")),
+    h("h1", {}, data.cv),
+    h("div", { class: "top" }, stateTag(data.state), h("span", { class: "score" },
+      meta(status.daily ? "daily check" : "upload", data.owner || "admin", `${localDay(data.started)} ${clock(data.started)}`,
+        `took ${took(data.started, data.finished)}`))),
+    h("div", { class: "links" },
+      status.actions_url ? h("a", { href: status.actions_url, target: "_blank", rel: "noopener" }, "GitHub Actions log") : null,
+      data.state === "done" ? h("a", { href: "#", onclick: (e) => { e.preventDefault(); go({ run: id }); } }, "Results") : null),
+    h("div", { class: "tiles" }, [
+      [status.stats ? status.stats.calls : "–", "AI calls"], [status.stats ? status.stats.cached : "–", "answers from cache"],
+      [status.stats ? `${Math.round(status.stats.input_tokens / 1000)}k / ${Math.round(status.stats.output_tokens / 1000)}k` : "–", "tokens in / out"],
+      [status.usage ? status.usage.courtlistener : "–", "CourtListener requests"], [status.usage ? status.usage.web_searches : "–", "web searches"]]
+      .map(([v, label]) => h("div", { class: "tile" }, h("b", {}, String(v)), h("span", {}, label)))),
+    h("p", { class: "muted small" }, meta(status.model && `model ${status.model}`, status.prompt_version && `prompts ${status.prompt_version}`,
+      status.days && `complaints from the last ${status.days} days`)),
+    status.error ? h("div", { class: "notice attention" }, h("h3", {}, "Error"), h("p", {}, status.error),
+      status.traceback ? h("details", {}, h("summary", { class: "small" }, "Traceback"), pre(status.traceback)) : null) : null,
+    h("div", { class: "section" }, h("h2", {}, `Steps (${steps.length})`),
+      steps.length ? h("div", { class: "card" }, steps.map((s) => {
+        const row = h("div", { class: "log-step" },
+          h("div", { class: "top" }, h("span", { class: "tag" }, s.stage), h("b", {}, s.label),
+            h("span", { class: "score" }, meta(s.at && clock(s.at), s.at && previous && `took ${took(previous, s.at)}`, s.cached && "cached"))),
+          h("div", { class: "small" }, s.detail));
+        previous = s.at || previous;
+        return row;
+      })) : h("p", { class: "muted" }, "No step finished."),
+      status.state === "failed" ? h("p", { class: "error small" }, "It stopped after the last step above.") : null),
+    h("div", { class: "section" }, h("h2", {}, `AI calls and searches (${(data.trace || []).length})`),
+      h("p", { class: "muted small" }, "Every model call with exactly what it was given and what it answered, and every search with its results. Tap one to open it."),
+      (data.trace || []).map((t, n) => traceEntry(t, n + 1))));
+}
+
 // Local time (with the time zone) of a daily UTC time, plus `later` minutes.
 function atLocal([hour, minute], later = 0) {
   const now = new Date();
@@ -815,6 +987,7 @@ async function route() {
     else if (p.get("view") === "cvs") await cvsPage();
     else if (p.get("view") === "guide") guidePage();
     else if (p.get("view") === "feedback") await feedbackPage();
+    else if (p.get("view") === "logs") await logsPage();
     else await listPage();
   } catch (error) {
     show(problem(error));
@@ -825,5 +998,6 @@ back.addEventListener("click", () => (history.length > 1 ? history.back() : go({
 guideLink.addEventListener("click", (event) => { event.preventDefault(); go({ view: "guide" }); });
 cvsLink.addEventListener("click", (event) => { event.preventDefault(); go({ view: "cvs" }); });
 feedbackLink.addEventListener("click", (event) => { event.preventDefault(); go({ view: "feedback" }); });
+logsLink.addEventListener("click", (event) => { event.preventDefault(); go({ view: "logs" }); });
 window.addEventListener("hashchange", route);
 route();

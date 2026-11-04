@@ -148,7 +148,21 @@ textarea.note { min-height: 70px; margin-top: 12px; }
   .bar-label { grid-column: 1 / -1; white-space: normal; }
   .bar:has(#feedback-link:not([hidden])) .who { display: none; }
   /* An admin's inner pages: Back and three links leave no room for the name. */
-  .bar:has(#feedback-link:not([hidden])):has(#back:not([hidden])) .brand { display: none; }
+  /* An admin's four links leave no room for the name. */
+  .bar:has(#feedback-link:not([hidden])) .brand { display: none; }
   .nav { gap: 12px; margin-left: auto; }
 }
 .card > .case:first-child { border-top: 0; margin-top: 0; padding-top: 0; }
+.error { color: #B3261E; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .error { color: #F2B8B5; } }
+.log-line { display: grid; grid-template-columns: 1.6em 1fr; gap: 6px; margin-top: 10px; }
+.log-icon { text-align: center; }
+.log-sub .case { padding-top: 8px; margin-top: 8px; }
+.log-upload { margin-top: 6px; }
+.log-step { padding: 10px 0; border-top: 1px solid var(--line); }
+.log-step:first-child { border-top: 0; padding-top: 0; }
+.log-trace { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin-top: 8px; }
+.log-trace summary { cursor: pointer; overflow-wrap: anywhere; }
+.log-trace[open] summary { margin-bottom: 8px; }
+.log-pre { white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+  background: var(--quote); border-radius: 8px; padding: 10px; max-height: 420px; overflow: auto; margin: 4px 0 10px; }

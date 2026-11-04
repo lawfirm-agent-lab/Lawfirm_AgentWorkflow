@@ -16,6 +16,7 @@ python -m src.matching.cloud --dotenv keys | revoke-key advisor               li
 python -m src.matching.cloud --dotenv add-emails                              add lawyers' addresses to older checks
 python -m src.matching.cloud --dotenv set-dispatch-token                      let uploads start cloud runs (Vault)
 python -m src.matching.cloud --dotenv feedback [--csv F] [--json F]          feedback statistics and exports
+python -m src.matching.cloud --dotenv log [--days N]                         schedule, runs, failures (PostgreSQL)
 
 The results website (site/, on GitHub Pages) reads the daily checks through database functions
 that check an access key (migration 007). Only the key's SHA-256 is stored; new-key prints the
@@ -297,6 +298,8 @@ def main(argv=None):
     feedback = commands.add_parser("feedback", help="Feedback statistics from the website, with optional exports")
     feedback.add_argument("--csv", type=Path, help="Also write every feedback row to this CSV file")
     feedback.add_argument("--json", type=Path, help="Also write every feedback row, with its snapshot, to this JSON file")
+    log = commands.add_parser("log", help="What ran in the cloud: schedule, runs with timings and errors, uploads, docket monitor")
+    log.add_argument("--days", type=int, default=2, help="How far back (1 to 60 days)")
     args = parser.parse_args(argv)
     from src.matching.run import ROOT
     if args.dotenv:
@@ -350,6 +353,14 @@ def main(argv=None):
             print("Stored the GitHub token in Supabase Vault as matching_github_token.")
         elif args.command == "revoke-key":
             print(f"Turned off {cloud.revoke_keys(args.label)} link(s) labelled {args.label}.")
+        elif args.command == "log":
+            if store.backend != "postgres":
+                print("The log is kept in the cloud database (PostgreSQL) only.")
+                return 1
+            from src.matching import logs
+            row = store.execute("SELECT matching_log_data(?) AS data", (args.days,)).fetchone()
+            data = row["data"] if isinstance(row["data"], dict) else json.loads(row["data"])
+            print(logs.report(data))
         elif args.command == "feedback":
             from src.matching import feedback
             rows = cloud.feedback()
