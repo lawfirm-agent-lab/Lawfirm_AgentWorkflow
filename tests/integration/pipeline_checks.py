@@ -178,27 +178,36 @@ class PostgreSQLSiteFunctionTests(unittest.TestCase):
         self.call('SELECT matching_cv_delete(?, ?)', self.key, 'cv-2.pdf')  # The admin can manage anyone's.
         self.assertEqual([n for n, _ in self.cloud.cvs()], [])
 
-    def test_a_new_rating_replaces_the_earlier_one_and_history_is_kept(self):
+    def test_one_feedback_per_case_and_admins_can_delete_it(self):
+        from src.store.db import StoreError
         run = '20261103-090000-aaaaaa'
-        first = self.call('SELECT matching_feedback_give(?, ?, ?, ?)', self.key, run, 0, 'up')
-        self.assertEqual((first['verdict'], first['would_contact']), ('up', False))
-        second = self.call('SELECT matching_feedback_give(?, ?, ?, ?, ?, ?, ?, ?)', self.key, run, 0, 'down',
-                           'not_relevant', 'low', False, '  Pro se suit, no real technical issue.  ')
-        self.assertEqual((second['verdict'], second['reason'], second['should_be'], second['note']),
+        given = self.call('SELECT matching_feedback_give(?, ?, ?, ?, ?, ?, ?, ?)', self.key, run, 0, 'down',
+                          'not_relevant', 'low', False, '  Pro se suit, no real technical issue.  ')
+        self.assertEqual((given['verdict'], given['reason'], given['should_be'], given['note']),
                          ('down', 'not_relevant', 'low', 'Pro se suit, no real technical issue.'))
-        self.call('SELECT matching_feedback_give(?, ?, ?, ?)', self.key, run, 0, 'gmail')  # Not a rating.
+        with self.assertRaisesRegex(StoreError, 'failed'):  # A second rating of the same case is refused.
+            self.call('SELECT matching_feedback_give(?, ?, ?, ?)', self.key, run, 0, 'up')
+        self.call('SELECT matching_feedback_give(?, ?, ?, ?)', self.key, run, 0, 'gmail')  # Not a rating: allowed.
+        self.call('SELECT matching_feedback_give(?, ?, ?, ?)', self.key, run, 0, 'copy')
         self.assertEqual(self.call('SELECT matching_feedback_case(?, ?, ?)', self.key, run, 0)['verdict'], 'down')
         rows = self.call('SELECT matching_feedback_all(?)', self.key)
-        self.assertEqual([(r['kind'], r['verdict'], r['current']) for r in rows],
-                         [('email', 'gmail', True), ('rating', 'down', True), ('rating', 'up', False)])
-        snap = rows[1]['snapshot']
-        self.assertEqual((rows[1]['case_name'], rows[1]['cv'], rows[1]['who']), ('Case 1', 'jane.pdf', 'test'))
+        self.assertEqual([(r['kind'], r['verdict']) for r in rows], [('email', 'copy'), ('email', 'gmail'), ('rating', 'down')])
+        snap = rows[2]['snapshot']
+        self.assertEqual((rows[2]['case_name'], rows[2]['cv'], rows[2]['who']), ('Case 1', 'jane.pdf', 'test'))
         self.assertEqual((snap['tier'], snap['source'], snap['expert'], snap['daily']), ('high', 'courtlistener', 'Jane Doe', True))
         self.assertIs(snap['screen']['relevant'], True)
         self.assertEqual(self.cloud.feedback(), rows)  # The feedback command reads the same rows.
         # The snapshot stays after the run is deleted.
         self.store.execute('DELETE FROM matching_runs')
-        self.assertEqual(self.call('SELECT matching_feedback_all(?)', self.key)[1]['snapshot']['tier'], 'high')
+        self.assertEqual(self.call('SELECT matching_feedback_all(?)', self.key)[2]['snapshot']['tier'], 'high')
+        # Deleting: one row by an admin from the website, or everything one person gave from the command line.
+        alice = self.cloud.new_key('alice')
+        with self.assertRaises(StoreError):
+            self.call('SELECT matching_feedback_delete(?, ?)', alice, rows[2]['id'])
+        self.assertEqual(self.call('SELECT matching_feedback_delete(?, ?)', self.key, rows[2]['id']), 1)
+        self.assertIsNone(self.call('SELECT matching_feedback_case(?, ?, ?)', self.key, run, 0))
+        self.assertEqual(self.cloud.delete_feedback('test'), 2)
+        self.assertEqual(self.call('SELECT matching_feedback_all(?)', self.key), [])
 
     def test_feedback_values_and_access_are_checked(self):
         from src.store.db import StoreError
