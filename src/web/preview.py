@@ -20,6 +20,7 @@ password is also made at each start.
 """
 import base64
 import hashlib
+import os
 import hmac
 import json
 import secrets
@@ -43,12 +44,22 @@ LOCAL = f"postgresql://postgres:{PASSWORD}@127.0.0.1:{DB_PORT}/preview"
 JWT_SECRET = secrets.token_urlsafe(36)
 HOSTS = {f"127.0.0.1:{WEB_PORT}", f"localhost:{WEB_PORT}"}
 POSTGREST = "postgrest/postgrest:v12.2.3"
+# Docker Desktop's own copy, for a terminal whose PATH lacks /usr/local/bin (some conda setups).
+DOCKER_APP = "/Applications/Docker.app/Contents/Resources/bin/docker"
 # Copied in this order; columns the copy has but the cloud does not yet get their defaults.
 TABLES = ("matching_access_keys", "matching_cvs", "matching_runs", "matching_requests", "matching_feedback", "pipeline_runs")
 
 
+def docker_command():
+    found = shutil.which("docker") or (DOCKER_APP if os.access(DOCKER_APP, os.X_OK) else None)
+    return found
+
+
 def docker(*args, check=True):
-    return subprocess.run(["docker", *args], check=check, capture_output=True, text=True)
+    command = docker_command()
+    # Its helpers (credentials, plugins) sit next to it; keep that folder on PATH for them.
+    env = {**os.environ, "PATH": f"{os.path.dirname(command)}{os.pathsep}{os.environ.get('PATH', '')}"}
+    return subprocess.run([command, *args], check=check, capture_output=True, text=True, env=env)
 
 
 def token(role="anon"):
@@ -189,9 +200,8 @@ def main():
     if not cloud_url:
         print("Set DATABASE_URL in .env (the cloud database to copy).")
         return 1
-    if shutil.which("docker") is None:
-        print("This terminal cannot find the docker command. Install Docker Desktop, or add "
-              "/usr/local/bin to PATH (check with: which docker).")
+    if docker_command() is None:
+        print("Docker is not installed (no docker command, and no Docker Desktop in /Applications).")
         return 1
     info = docker("info", "--format", "{{.ServerVersion}}", check=False)
     if info.returncode:
