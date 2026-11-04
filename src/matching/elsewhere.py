@@ -1,7 +1,8 @@
 """Search agent: find a complaint that CourtListener has no PDF for on other websites.
 
-find_cases calls Finder.find(case) for complaints that screening judged relevant but that have no
-PDF on CourtListener (at most MAX_CASES per CV). For each:
+find_cases calls Finder.find(case) for complaints with no PDF on CourtListener that screening
+judged relevant, then for those it could not judge ("unclear"), at most MAX_CASES per CV. An
+unclear one with a verified copy is screened again on it. For each:
 
 0. One CourtListener docket request adds the docket number and court (counted in its budget).
 1. A web search (Tavily) with strong identifiers only: the parties, "complaint", the docket number.
@@ -31,7 +32,7 @@ from src.matching import discover
 from src.matching.profiles import choice, load, objects
 
 TAVILY = "https://api.tavily.com/search"
-MAX_CASES = 3  # cases searched per CV and run
+MAX_CASES = 4  # cases searched per CV and run (relevant ones first, then unclear ones)
 MAX_PICKS = 3  # results fetched per case
 MAX_LINKS = 2  # complaint links followed from a verified page
 MAX_BYTES = 10 * 1024 * 1024

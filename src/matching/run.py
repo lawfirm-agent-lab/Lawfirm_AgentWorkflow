@@ -36,7 +36,14 @@ PROMPTS = ROOT / "src" / "llm" / "prompts"
 STORAGE = "https://storage.courtlistener.com/"
 MIN_CASE_CHARS = 2000
 MIN_WEB_CHARS = 800  # A press release is shorter than a complaint.
+# A complaint whose first pages have less text than this is likely scanned: its first pages are
+# read with OCR before screening (at most OCR_SCREENS per CV), so screening does not see a blank.
+MIN_EXCERPT_CHARS = 200
+OCR_SCREENS = 8
 CASE_PAGES = 150
+# The prompts a matching run uses; prompt_version() fingerprints them, so feedback can tell which
+# wording produced a result even when a prompt is edited without a new name.
+PROMPTS_USED = ("expert_cv_v1", "case_search_v1", "case_screen_v1", "case_profile_v1", "case_match_v1", "elsewhere_pick_v1")
 LOCAL_LIMITS = Limits(per_day=30, headroom_per_day=0, headroom_per_hour=0, max_requests_per_run=6)
 CLOUD_LIMITS = Limits(max_requests_per_run=6)  # Account limits less the pipeline's headroom, 6 per CV.
 
@@ -91,6 +98,13 @@ class Model:
             self.record(prompt_name, label, input=user, output=reply.text, cached=False,
                         tokens=[reply.input_tokens, reply.output_tokens])
             return result
+
+
+def prompt_version():
+    digest = hashlib.sha256()
+    for name in PROMPTS_USED:
+        digest.update((PROMPTS / f"{name}.md").read_bytes())
+    return digest.hexdigest()[:8]
 
 
 def marked(pages, limit):
@@ -183,12 +197,35 @@ def expert_view(expert, items=True):
     return json.dumps(view, ensure_ascii=False, indent=1)
 
 
+def ocr_excerpt(pdf, limit=3000):
+    """The first pages of a scanned complaint, read with OCR; empty when that fails."""
+    try:
+        extracted = extract_pdf(pdf, layout=False, first_pages=3)
+    except (ExtractionError, OSError):
+        return ""
+    return " ".join(" ".join(profiles.clean(pages_from_extraction(extracted))).split())[:limit]
+
+
+def web_excerpt(case, limit=3000):
+    """The start of what the search agent found, for screening again."""
+    if case.get("web_pdf"):
+        return discover.first_pages(case["web_pdf"]) or ocr_excerpt(case["web_pdf"], limit)
+    return " ".join(Path(case["web_text"]).read_text(encoding="utf-8").split())[:limit]
+
+
+def screen(model, expert, listing, label="Screening"):
+    return model.ask("case_screen_v1", f"<expert>\n{expert_view(expert, items=False)}\n</expert>\n<candidates>\n"
+                     f"{json.dumps(listing, ensure_ascii=False, indent=1)}\n</candidates>",
+                     discover.parse_screen, 8000, label=label) if listing else {}
+
+
 def find_cases(model, search, expert, keep, pdf_dir, log, per_search=8, skip=(), finder=None):
     """Search, download and screen. Returns (cases to profile, discovery record for the report).
 
     skip: docket URLs already shown to this expert (earlier daily checks); they are not taken again.
-    finder: the search agent (elsewhere.Finder), which looks for relevant complaints missing on
-    CourtListener; what it verifies is read like the other cases."""
+    finder: the search agent (elsewhere.Finder), which looks for complaints missing on CourtListener
+    that screening judged relevant, then for those it could not judge ("unclear"); a verified copy
+    of a relevant one is read like the other cases, and an unclear one is screened again on it."""
     before = model.stats["cached"]
     searches = model.ask("case_search_v1", f"<expert>\n{expert_view(expert)}\n</expert>", discover.parse_searches, 1000,
                          label="Search terms")
@@ -213,7 +250,7 @@ def find_cases(model, search, expert, keep, pdf_dir, log, per_search=8, skip=(),
                      taken=[r["url"] for r in fresh])
         log({"stage": "search", "label": s["label"], "detail": f"{len(rows)} complaints found, {len(fresh)} new taken"
              + (f", {len(known)} seen before" if known else ""), "cached": cached})
-    candidates = []
+    candidates, scanned = [], 0
     for case in found:
         if case["has_pdf"]:
             try:
@@ -222,6 +259,9 @@ def find_cases(model, search, expert, keep, pdf_dir, log, per_search=8, skip=(),
                 case["download_error"] = str(exc)
                 continue
             case["excerpt"] = discover.first_pages(case["pdf"])
+            if len(case["excerpt"]) < MIN_EXCERPT_CHARS and scanned < OCR_SCREENS:
+                scanned += 1
+                case["excerpt"], case["ocr"] = ocr_excerpt(case["pdf"]) or case["excerpt"], True
             case["docket_number"] = discover.case_number(case["excerpt"])
         else:
             case["cost"] = discover.pacer_cost(case.get("page_count"))
@@ -230,9 +270,7 @@ def find_cases(model, search, expert, keep, pdf_dir, log, per_search=8, skip=(),
                 **({"first_pages": c["excerpt"]} if c["has_pdf"] else {"complaint": "not available"})}
                for n, c in enumerate(candidates, 1)]
     before = model.stats["cached"]
-    screened = model.ask("case_screen_v1", f"<expert>\n{expert_view(expert, items=False)}\n</expert>\n<candidates>\n"
-                         f"{json.dumps(listing, ensure_ascii=False, indent=1)}\n</candidates>",
-                         discover.parse_screen, 8000, label="Screening") if listing else {}
+    screened = screen(model, expert, listing)
     for n, case in enumerate(candidates, 1):
         verdict = screened.get(f"C{n}") or {"relevant": False, "unclear": True, "domains": [], "case_type": None,
                                             "reason": "Not assessed by the screening step."}
@@ -242,19 +280,38 @@ def find_cases(model, search, expert, keep, pdf_dir, log, per_search=8, skip=(),
     wanted = [c for c in relevant if not c["has_pdf"]]
     step(log, "screen", "Screening", model, before,
          f"{len(relevant)} of {len(candidates)} candidates look relevant, {len(kept)} kept for full reading"
-         + (f", {len(wanted)} without a complaint PDF worth getting" if wanted else ""), total_hint=len(kept))
-    for case in wanted[:elsewhere.MAX_CASES] if finder else []:
+         + (f", {len(wanted)} without a complaint PDF worth getting" if wanted else "")
+         + (f", {scanned} scanned complaints read with OCR" if scanned else ""), total_hint=len(kept))
+    unclear = [c for c in candidates if c["screen"]["unclear"] and not c["has_pdf"]]
+    for case in (wanted + unclear)[:elsewhere.MAX_CASES] if finder else []:
         before = model.stats["cached"]
         web = case["elsewhere"] = finder.find(case, pdf_dir)
         step(log, "web", case["name"], model, before,
-             f"found {web['kind']} on {web['source']} ({web['matched_by']})" if web["verified"]
-             else f"{web['results']} web results, none verified")
+             ("" if case["screen"]["relevant"] else "(could not be judged) ")
+             + (f"found {web['kind']} on {web['source']} ({web['matched_by']})" if web["verified"]
+                else f"{web['results']} web results, none verified"))
+    # An unclear case the agent found a copy of is screened again on that copy.
+    again = [c for c in unclear if c.get("web_pdf") or c.get("web_text")]
+    if again:
+        before = model.stats["cached"]
+        verdicts = screen(model, expert, [
+            {"id": f"C{n}", "name": c["name"], "court": c["court"], "filed": c["filed"], "description": c["description"],
+             "first_pages": web_excerpt(c), "found_on_the_web": f"{c['elsewhere']['kind']} on {c['elsewhere']['source']}"}
+            for n, c in enumerate(again, 1)], label="Screening again")
+        for n, case in enumerate(again, 1):
+            if f"C{n}" in verdicts:
+                case["first_screen"], case["screen"] = case["screen"], {**verdicts[f"C{n}"], "again": True}
+        now = [c for c in again if c["screen"]["relevant"]]
+        step(log, "screen", "Screening again", model, before,
+             f"{len(now)} of {len(again)} cases first judged unclear are relevant on what the web search found")
+        wanted += now
     for case in candidates:
         case["kept"] = case in kept
     record = {"searches": searches, "days": search.days, "since": search.since().isoformat(), "skipped": skipped,
               "candidates": [{k: c.get(k) for k in ("name", "court", "filed", "url", "found_by", "screen", "kept",
                                                     "download_error", "docket_number", "has_pdf", "page_count",
-                                                    "pacer_doc_id", "cost", "description", "elsewhere")} for c in found],
+                                                    "pacer_doc_id", "cost", "description", "elsewhere", "first_screen",
+                                                    "ocr")} for c in found],
               "cost": round(sum(c["cost"] for c in wanted), 2)}
     cases = [{k: c[k] for k in ("name", "court", "filed", "url", "document_label", "document_url", "pdf", "docket_number",
                                 "found_by")} for c in kept]

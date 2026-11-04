@@ -122,3 +122,33 @@ input[type="file"] { background: var(--card); }
 .guide p, .guide li { line-height: 1.55; }
 .guide li + li { margin-top: 6px; }
 .guide .tier { margin-right: 4px; }
+.feedback .top { justify-content: space-between; }
+.feedback h3 { font-size: 17px; }
+.btn.vote[aria-pressed="true"] { background: var(--head); color: var(--bg); }
+.controls.tight { margin: 6px 0 4px; }
+textarea.note { min-height: 70px; margin-top: 12px; }
+.select { font: inherit; font-size: 14px; color: var(--ink); background: var(--card); border: 1px solid var(--line); border-radius: 999px; padding: 6px 12px; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; margin-top: 8px; }
+.tile { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; }
+.tile b { font: 600 24px/1.2 Georgia, "Times New Roman", serif; color: var(--head); }
+.tile span { font-size: 13px; color: var(--muted); }
+.stat-group { margin-top: 24px; }
+.stat-group > h2 { margin-bottom: 8px; }
+.bar-row { display: grid; grid-template-columns: minmax(0, 11em) 1fr auto; gap: 10px; align-items: center; font-size: 14px; margin-top: 6px; }
+.bar-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bar-track { height: 8px; background: var(--quote); border-radius: 999px; overflow: hidden; }
+.bar-fill { display: block; height: 100%; background: var(--high); border-radius: 999px; }
+.bar-fill.down { background: var(--accent); }
+.bar-value { color: var(--muted); font-size: 13px; white-space: nowrap; }
+.notice.attention { border-color: var(--accent); }
+.nav a, .brand { white-space: nowrap; }
+@media (max-width: 420px) {
+  /* Label on its own line, bar and value under it. */
+  .bar-row { grid-template-columns: 1fr auto; row-gap: 2px; }
+  .bar-label { grid-column: 1 / -1; white-space: normal; }
+  .bar:has(#feedback-link:not([hidden])) .who { display: none; }
+  /* An admin's inner pages: Back and three links leave no room for the name. */
+  .bar:has(#feedback-link:not([hidden])):has(#back:not([hidden])) .brand { display: none; }
+  .nav { gap: 12px; margin-left: auto; }
+}
+.card > .case:first-child { border-top: 0; margin-top: 0; padding-top: 0; }

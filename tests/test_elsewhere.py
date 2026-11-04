@@ -221,5 +221,77 @@ class FindCasesTests(unittest.TestCase):
         self.assertIn("found complaint on ftc.gov", steps[-1]["detail"])
 
 
+class ScreenModel:
+    """Search terms, then a screening answer per call, recording what each screening saw."""
+
+    def __init__(self, *verdicts):
+        self.stats, self.verdicts, self.seen = {"cached": 0}, list(verdicts), []
+
+    def record(self, *args, **kwargs):
+        pass
+
+    def ask(self, prompt_name, user, parse, max_tokens, label=""):
+        if prompt_name == "case_search_v1":
+            return [{"label": "Forensics", "terms": "forensics"}]
+        self.seen.append((label, user))
+        return self.verdicts.pop(0)
+
+
+def verdict(relevant):
+    return {"relevant": relevant is True, "unclear": relevant == "unclear", "domains": [], "case_type": "FTC Act",
+            "reason": f"Judged {relevant}."}
+
+
+class UnclearTests(unittest.TestCase):
+    def search(self, has_pdf):
+        search = MagicMock(days=365, **{"since.return_value": date(2025, 11, 4)})
+        search.search.return_value = ([{**CASE, "url": "https://cl/docket/7/", "has_pdf": has_pdf, "page_count": None,
+                                        "document_label": "Complaint", "document_url": None, "pacer_doc_id": None,
+                                        "filepath": "7.pdf"}], False)
+        search.download.return_value = Path("/nonexistent/7.pdf")
+        return search
+
+    def test_an_unclear_case_found_on_the_web_is_screened_again_and_read(self):
+        text = Path(tempfile.mkdtemp()) / "page.txt"
+        text.write_text("The Federal Trade Commission sued Digital Forensics Corporation over fake forensic reports.")
+
+        def find(case, pdf_dir):
+            case["web_text"] = str(text)
+            return {"verified": True, "kind": "web page", "source": "ftc.gov", "url": "https://www.ftc.gov/news/x",
+                    "matched_by": "parties and filing year", "results": 3}
+
+        model, steps = ScreenModel({"C1": verdict("unclear")}, {"C1": verdict(True)}), []
+        cases, record = find_cases(model, self.search(False), {"name": "Jane", "headline": "", "domains": [], "items": []},
+                                   6, Path("/nonexistent"), steps.append, finder=MagicMock(find=find))
+        self.assertEqual([label for label, _ in model.seen], ["Screening", "Screening again"])
+        self.assertIn("fake forensic reports", model.seen[1][1])
+        self.assertIn('"found_on_the_web": "web page on ftc.gov"', model.seen[1][1])
+        self.assertEqual((len(cases), cases[0]["document_label"], cases[0]["from_web"]),
+                         (1, "Web page (from ftc.gov)", "web page"))
+        found = record["candidates"][0]
+        self.assertEqual((found["first_screen"]["unclear"], found["screen"]["relevant"], found["screen"]["again"]),
+                         (True, True, True))
+        self.assertIn("(could not be judged) found web page on ftc.gov", steps[-2]["detail"])
+        self.assertEqual(record["cost"], 3.0)
+
+    def test_an_unclear_case_with_nothing_found_stays_unread(self):
+        model = ScreenModel({"C1": verdict("unclear")})
+        found = MagicMock(**{"find.return_value": {"verified": False, "results": 4, "url": None}})
+        cases, record = find_cases(model, self.search(False), {"name": "Jane", "headline": "", "domains": [], "items": []},
+                                   6, Path("/nonexistent"), lambda item: None, finder=found)
+        self.assertEqual((cases, len(model.seen), found.find.call_count), ([], 1, 1))
+        self.assertIsNone(record["candidates"][0]["first_screen"])
+
+    def test_a_scanned_complaint_is_read_with_ocr_before_screening(self):
+        model = ScreenModel({"C1": verdict(False)})
+        with patch("src.matching.discover.first_pages", return_value=""), \
+                patch("src.matching.run.ocr_excerpt", return_value="COMPLAINT Case 1:26-cv-04321 FTC v. Digital Forensics") as ocr:
+            cases, record = find_cases(model, self.search(True), {"name": "Jane", "headline": "", "domains": [], "items": []},
+                                       6, Path("/nonexistent"), lambda item: None)
+        ocr.assert_called_once()
+        self.assertIn("FTC v. Digital Forensics", model.seen[0][1])
+        self.assertEqual((record["candidates"][0]["ocr"], record["candidates"][0]["docket_number"]), (True, "1:26-cv-04321"))
+
+
 if __name__ == "__main__":
     unittest.main()
