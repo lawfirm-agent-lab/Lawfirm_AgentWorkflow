@@ -119,34 +119,41 @@ class Jobs:
         status = json.loads((folder / "status.json").read_text(encoding="utf-8"))
 
         def log(item):
-            status["steps"].append(item)
+            status["steps"].append({**item, "at": now()})  # The Logs page shows how long each step took.
             if "total_hint" in item:  # Screening decided how many found cases will be read.
                 status["total"] = len(status["steps"]) + 2 * (len(self.cases) + item["total_hint"])
             write_json(folder / "status.json", status)
             if self.on_step:
                 self.on_step(status)
 
-        model = None
+        model = search = web = None
+        actions = {k: self.env.get(k) for k in ("GITHUB_SERVER_URL", "GITHUB_REPOSITORY", "GITHUB_RUN_ID")}
+        if all(actions.values()):  # Run by GitHub Actions: link its log.
+            status["actions_url"] = "{GITHUB_SERVER_URL}/{GITHUB_REPOSITORY}/actions/runs/{GITHUB_RUN_ID}".format(**actions)
         try:
             status["state"] = "running"
             write_json(folder / "status.json", status)
             model = Model(self.settings, self.data_dir / "cache")
             daily = status.get("daily")
             search = make_search(self.env, self.data_dir, status.get("days", 365), self.ledger) if status.get("find") else None
+            web = make_web(self.env, self.data_dir) if search else None
             experts = run(model, [folder / "cv.pdf"], [] if daily else self.cases, self.base, self.limit, log, search,
                           self.keep, self.data_dir / "pdfs", cv_name=status["cv"],
-                          skip=self.shown(status["cv"]) if daily else (),
-                          web=make_web(self.env, self.data_dir) if search else None)
+                          skip=self.shown(status["cv"]) if daily else (), web=web)
             write_json(folder / "result.json", experts)
             status.update(state="done", stats=model.stats)
         except LLMError as exc:
             status.update(state="failed", error=f"LLM call failed: {exc}")
         except Exception as exc:  # noqa: BLE001 - any failure must reach the progress page
-            status.update(state="failed", error=f"{type(exc).__name__}: {exc}")
+            status.update(state="failed", error=f"{type(exc).__name__}: {exc}", traceback=traceback.format_exc()[-4000:])
             (folder / "error.txt").write_text(traceback.format_exc(), encoding="utf-8")
         finally:
             if model is not None:  # Kept for failed runs too: the inspection pages show how far it got.
                 write_json(folder / "trace.json", model.trace)
+                status["stats"] = model.stats
+            count = lambda value: value if isinstance(value, int) else 0
+            status["usage"] = {"courtlistener": count(getattr(getattr(search, "budget", None), "used", 0)),
+                               "web_searches": count(getattr(web, "calls", 0))}
             status["finished"] = now()
             write_json(folder / "status.json", status)
             if self.cloud is not None and status.get("daily"):

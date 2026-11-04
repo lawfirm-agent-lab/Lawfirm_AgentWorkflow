@@ -145,6 +145,7 @@ class WebSearch:
 
     def __init__(self, session, key, cache_dir, today=date.today):
         self.session, self.key, self.cache_dir, self.today = session, key, cache_dir, today
+        self.calls = 0  # Tavily requests made (cached answers not counted)
         cache_dir.mkdir(parents=True, exist_ok=True)
 
     def search(self, query, results=5):
@@ -153,6 +154,7 @@ class WebSearch:
         path = self.cache_dir / f"web-{name}.json"
         if path.exists():
             return json.loads(path.read_text(encoding="utf-8")), True
+        self.calls += 1
         try:
             response = self.session.post(TAVILY, json={"query": query, "max_results": results, "search_depth": "basic"},
                                          headers={"Authorization": f"Bearer {self.key}"}, timeout=(10, 30),

@@ -224,6 +224,36 @@ class PostgreSQLSiteFunctionTests(unittest.TestCase):
         self.assertIsNone(self.call('SELECT matching_feedback_case(?, ?, ?)', self.key, '20261104-090000-bbbbbb', 0))
         self.assertEqual([r['who'] for r in self.call('SELECT matching_feedback_all(?)', self.key)], ['alice'])
 
+    def test_logs_are_for_admin_links_only(self):
+        from src.matching import logs
+        from src.store.db import StoreError
+        self.store.execute("INSERT INTO matching_requests (request_id, cv_name, save, state, created_at, updated_at, error, owner) "
+                           "VALUES ('q1', 'bad.pdf', 0, 'failed', ?, ?, 'InvalidOutput: defendants', 'alice')",
+                           (datetime_now(), datetime_now()))
+        data = self.call('SELECT matching_log_overview(?, ?)', self.key, 7)
+        self.assertEqual(data['schedule'], [])  # No pg_cron in the test database.
+        run = data['runs'][0]
+        self.assertEqual((run['run_id'], run['cv'], run['daily'], run['cases'], run['candidates'], run['tiers']),
+                         ('20261103-090000-aaaaaa', 'jane.pdf', True, 1, 2, {'high': 1}))
+        self.assertEqual([q['error'] for q in data['requests']], ['InvalidOutput: defendants'])
+        text = logs.report(data)
+        self.assertIn('jane.pdf (admin) · daily · done', text)
+        self.assertIn('bad.pdf (alice): InvalidOutput: defendants', text)
+        detail = self.call('SELECT matching_log_run(?, ?)', self.key, '20261103-090000-aaaaaa')
+        self.assertEqual((detail['status']['state'], detail['trace']), ('done', []))
+        alice = self.cloud.new_key('alice')
+        for sql, args in (('SELECT matching_log_overview(?, ?)', (alice, 7)), ('SELECT matching_log_run(?, ?)', (alice, 'x'))):
+            with self.subTest(sql=sql), self.assertRaises(StoreError):
+                self.call(sql, *args)
+        if self.call("SELECT count(*) FROM pg_roles WHERE rolname = 'anon'"):
+            self.assertFalse(self.call("SELECT has_function_privilege('anon', 'public.matching_log_data(integer)', 'EXECUTE')"))
+            self.assertTrue(self.call("SELECT has_function_privilege('anon', 'public.matching_log_run(text, text)', 'EXECUTE')"))
+
+
+def datetime_now():
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).isoformat(timespec='seconds')
+
 
 if __name__ == '__main__':
     suite = unittest.TestSuite()

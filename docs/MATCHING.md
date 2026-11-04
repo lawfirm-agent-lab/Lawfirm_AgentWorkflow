@@ -118,6 +118,25 @@ The token: a fine-grained GitHub personal access token for this repository only,
 
 **My CVs** (website page, linked in the top bar once a CV is saved, and commands): a saved CV can be stopped (no more daily checks; its past results stay; it can be resumed) or deleted (the CV, every daily check and upload run made from it, and its finished upload requests; copies already on someone's computer in `data/matching/runs` are not touched). Database functions `matching_cvs`, `matching_cv_active` and `matching_cv_delete` ([010_matching_cv_admin.postgres.sql](../sql/migrations/010_matching_cv_admin.postgres.sql)) check the access key like the others; on the command line: `list`, `stop-cv`, `resume-cv`, `delete-cv`. Each person can do this only for their own CVs; an admin link for any.
 
+**Logs** (admin links only, the **Logs** page in the top bar; [018_matching_logs.postgres.sql](../sql/migrations/018_matching_logs.postgres.sql)):
+
+- **By day**:
+  - whether the daily schedule fired (pg_cron history), and whether GitHub accepted the run request (pg_net; Supabase keeps these answers for about 6 hours);
+  - each daily check with its duration, what it found and its error;
+  - saved CVs that were not checked;
+  - uploads, with their errors;
+  - the docket monitor's runs and failures.
+- **Every matching run**: filter by Daily, Uploads or Failed. Each run's page shows:
+  - its GitHub Actions log link and the model and prompt version;
+  - AI calls (and answers from the cache), tokens, CourtListener requests and web searches;
+  - the error with its traceback;
+  - every step with its time and how long it took;
+  - every AI call with exactly what the model was given and what it answered, and every search with its results.
+
+  The trace holds the CV's text, which is why only admin links can open it.
+- **What a run records for this** (since this change; older runs show "–"): the time of each step, the GitHub Actions run link, request counts, model statistics on failed runs too, and the traceback of an unexpected error.
+- **From the command line**: `python -m src.matching.cloud --dotenv log [--days N]` prints the same overview: schedule firings, runs with durations, usage and errors, saved CVs with no check in 24 hours, failed uploads and docket monitor failures.
+
 **Feedback** (website; [016_matching_feedback.sql](../sql/migrations/016_matching_feedback.sql), [017_matching_feedback_functions.postgres.sql](../sql/migrations/017_matching_feedback_functions.postgres.sql), [src/matching/feedback.py](../src/matching/feedback.py)):
 
 - **Rating a case**: every case page has 👍 Useful / 👎 Not right; one tap saves it. After 👎, the person can pick a reason (not relevant, wrong level, misread, wrong lawyer details, already known, other) and the level it should have been. After 👍, they can tick "would contact the lawyers". A note is optional on both.
