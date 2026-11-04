@@ -14,10 +14,11 @@ const app = document.getElementById("app");
 const back = document.getElementById("back");
 const whoLabel = document.getElementById("who");
 const guideLink = document.getElementById("guide");
+const cvsLink = document.getElementById("my-cvs");
 // The daily check starts at 11:30 UTC (Supabase pg_cron); a backup run at 17:00 UTC covers a missed one.
 const DAILY_UTC = [11, 30];
 const BACKUP_UTC = [17, 0];
-const cache = { feed: {}, runs: {}, me: null };
+const cache = { feed: {}, runs: {}, me: null, cvs: null };
 const MAX_UPLOAD = 10 * 1024 * 1024;
 let poll = null;  // Timer of the progress page; stopped when the page changes.
 
@@ -120,6 +121,28 @@ function ownerNote(owner) {
   return cache.me && cache.me.admin ? `owner: ${owner || "admin"}` : null;
 }
 
+async function savedCvs() {
+  if (!cache.cvs) cache.cvs = await rpc("matching_cvs", { access_key: accessKey() });
+  return cache.cvs;
+}
+
+// Top bar: "My CVs" appears once there is a saved CV; the current page's link is marked.
+function nav(view) {
+  cvsLink.hidden = !(cache.me.admin || (cache.cvs && cache.cvs.length));
+  for (const [link, name] of [[cvsLink, "cvs"], [guideLink, "guide"]]) {
+    if (view === name) link.setAttribute("aria-current", "page");
+    else link.removeAttribute("aria-current");
+  }
+}
+
+function textLink(label, view) {
+  return h("a", { class: "text-link", href: "#", onclick: (event) => { event.preventDefault(); go(view); } }, label);
+}
+
+function uploadButton() {
+  return h("button", { class: "btn", type: "button", onclick: () => go({ view: "upload" }) }, "Upload a CV");
+}
+
 // ---- list page: new cases by day ----
 
 async function feed(days) {
@@ -163,7 +186,13 @@ async function listPage() {
   const p = params();
   const days = WINDOWS.includes(Number(p.get("days"))) ? Number(p.get("days")) : 14;
   const who = p.get("cv");
-  const runs = await feed(days);
+  const [runs, cvs] = await Promise.all([feed(days), savedCvs()]);
+  if (!runs.length && !cvs.length) {
+    return show(h("section", { class: "notice welcome" }, h("h2", {}, "Welcome"),
+      h("p", {}, "Upload an expert's CV. Each morning the system finds newly filed court cases that match it and lists them here."),
+      h("p", { class: "muted small" }, "You only see the CVs you upload."),
+      h("div", { class: "buttons" }, uploadButton(), textLink("How it works →", { view: "guide" }))));
+  }
   const names = [...new Set(runs.flatMap((r) => r.experts.map((e) => e.name || r.cv)))].sort();
   const byDay = new Map();
   const uploads = [];
@@ -179,27 +208,22 @@ async function listPage() {
       byDay.get(key).push(expertCard(run, expert));
     }
   }
+  const checked = cvs.some((cv) => cv.active);
   show(
-    h("div", { class: "headline" }, h("h1", {}, "New cases by day"),
-      h("div", { class: "buttons tight" },
-        h("button", { class: "btn", type: "button", onclick: () => go({ view: "upload" }) }, "Upload a CV"),
-        h("button", { class: "btn light", type: "button", onclick: () => go({ view: "cvs" }) }, "Saved CVs"))),
-    h("p", { class: "muted small intro" }, "Each morning the system searches complaints filed in the last two days for every saved CV, " +
-      "screens them, reads the relevant ones and matches them to the CV. Each case is shown once."),
-    h("div", { class: "controls" },
+    h("div", { class: "headline" }, h("h1", {}, "New cases by day"), h("div", { class: "buttons tight" }, uploadButton())),
+    h("p", { class: "muted small intro" }, `Saved CVs are checked every morning at ${atLocal(DAILY_UTC)}. Each case is shown once.`),
+    names.length > 1 ? h("div", { class: "controls" },
       h("button", { class: "chip", type: "button", "aria-pressed": String(!who), onclick: () => go({ days }) }, "All experts"),
-      names.map((n) => h("button", { class: "chip", type: "button", "aria-pressed": String(who === n), onclick: () => go({ days, cv: n }) }, n))),
-    byDay.size ? [...byDay].map(([label, cards]) => h("div", {}, h("h2", { class: "day" }, label), cards))
-      : runs.length ? h("p", { class: "muted" }, `No daily check in the last ${days} days.`)
-        : h("div", { class: "notice" }, h("h3", {}, "Nothing here yet"),
-          h("p", { class: "muted" }, "Upload a CV to find matching cases. Tick \u201cSave this CV for daily checks\u201d " +
-            "and new cases for it will appear here every day. You only see the CVs you upload."),
-          h("div", { class: "buttons" }, h("button", { class: "btn", type: "button", onclick: () => go({ view: "upload" }) }, "Upload a CV"),
-            h("button", { class: "btn light", type: "button", onclick: () => go({ view: "guide" }) }, "Read the guide"))),
-    uploads.length ? h("div", { class: "section" }, h("h1", { class: "sub" }, "From uploaded CVs"),
-      h("p", { class: "muted small" }, "Complaints filed in the year before the upload."), uploads) : null,
+      names.map((n) => h("button", { class: "chip", type: "button", "aria-pressed": String(who === n), onclick: () => go({ days, cv: n }) }, n))) : null,
     h("div", { class: "controls" }, h("span", { class: "muted small" }, "Show the last"),
-      WINDOWS.map((d) => h("button", { class: "chip", type: "button", "aria-pressed": String(d === days), onclick: () => go({ days: d, cv: who }) }, `${d} days`))));
+      WINDOWS.map((d) => h("button", { class: "chip", type: "button", "aria-pressed": String(d === days), onclick: () => go({ days: d, cv: who }) }, `${d} days`))),
+    byDay.size ? [...byDay].map(([label, cards]) => h("div", {}, h("h2", { class: "day" }, label), cards))
+      : h("div", { class: "notice" }, h("h3", {}, "No new cases yet"),
+        h("p", { class: "muted" }, checked
+          ? `After each morning's check, new cases usually appear here by ${atLocal(DAILY_UTC, 30)}. Some days have none.`
+          : "None of your CVs is saved for daily checks. Resume one in My CVs, or upload a CV and keep \u201cSave this CV for daily checks\u201d ticked.")),
+    uploads.length ? h("div", { class: "section" }, h("h1", { class: "sub" }, "From uploaded CVs"),
+      h("p", { class: "muted small" }, "Complaints filed in the year before the upload."), uploads) : null);
 }
 
 // ---- upload a CV, follow its run, show its results ----
@@ -229,6 +253,8 @@ function uploadPage() {
     try {
       const answer = await rpc("matching_submit", { access_key: accessKey(), cv_name: chosen.name,
         pdf_base64: await fileAsBase64(chosen), save: save.checked });
+      cache.feed = {};
+      cache.cvs = null;
       go({ request: answer.request_id }, true);
     } catch (error) {
       if (error instanceof AccessError) return show(problem(error));
@@ -245,14 +271,13 @@ function uploadPage() {
     h("p", { class: "muted small intro" }, "The system reads the CV, searches CourtListener for complaints filed in the last year, " +
       "screens them, reads the relevant ones and matches them to the CV. It runs in the cloud and takes about 5 to 10 minutes; " +
       "you can close this page and come back."), form,
-    h("p", { class: "small" }, h("a", { href: "#", onclick: (event) => { event.preventDefault(); go({ view: "guide" }); } },
-      "How daily checks and results work")));
+    h("p", { class: "small" }, textLink("How daily checks and results work", { view: "guide" })));
 }
 
-// Saved CVs: stop or resume daily checks (unsubscribe), or delete a CV with all its results.
+// My CVs: stop or resume daily checks (unsubscribe), or delete a CV with all its results.
 async function cvsPage() {
   back.hidden = false;
-  const cvs = await rpc("matching_cvs", { access_key: accessKey() });
+  const cvs = cache.cvs = await rpc("matching_cvs", { access_key: accessKey() });
   const status = h("p", { class: "muted small" });
   const act = (fn) => async () => {
     try {
@@ -260,6 +285,7 @@ async function cvsPage() {
       if (message === null) return;
       cache.feed = {};  // The list changes when results are deleted.
       await cvsPage();
+      nav("cvs");
       app.querySelector(".status").textContent = message;
     } catch (error) {
       if (error instanceof AccessError) return show(problem(error));
@@ -276,7 +302,7 @@ async function cvsPage() {
     return `Deleted ${cv.name} and ${done.runs} result${done.runs === 1 ? "" : "s"}.`;
   });
   status.className = "muted small status";
-  show(h("h1", {}, "Saved CVs"),
+  show(h("div", { class: "headline" }, h("h1", {}, "My CVs"), h("div", { class: "buttons tight" }, uploadButton())),
     h("p", { class: "muted small intro" }, (cache.me && cache.me.admin ? "All saved CVs (admin). " : "The CVs you saved. ") +
       "Saved CVs are checked for new cases every morning. Stopping a CV ends its daily checks " +
       "and keeps its past results; deleting it removes the CV and every result made from it."),
@@ -289,8 +315,8 @@ async function cvsPage() {
       h("div", { class: "buttons" },
         h("button", { class: "btn light", type: "button", onclick: toggle(cv) }, cv.active ? "Stop daily checks" : "Resume daily checks"),
         h("button", { class: "btn danger", type: "button", onclick: remove(cv) }, "Delete"))))
-      : h("p", { class: "muted" }, "No saved CV. Upload one and tick “Save this CV for daily checks”."),
-    h("div", { class: "buttons" }, h("button", { class: "btn", type: "button", onclick: () => go({ view: "upload" }) }, "Upload a CV")));
+      : h("div", { class: "notice" }, h("h3", {}, "You have no saved CVs yet"),
+        h("p", { class: "muted" }, "Upload one and keep “Save this CV for daily checks” ticked.")));
 }
 
 // Local time (with the time zone) of a daily UTC time, plus `later` minutes.
@@ -326,7 +352,7 @@ function guidePage() {
         h("li", {}, "Add it to your phone's home screen. iPhone: in Safari tap Share, then “Add to Home Screen”. " +
           "Android: in Chrome tap ⋮, then “Add to Home screen”. The icon then opens straight to your cases."),
         h("li", {}, "Upload a CV (", link("Upload a CV", { view: "upload" }), ").")),
-      h("p", { class: "muted small" }, "The name at the top right shows whose link this is.")),
+      h("p", { class: "muted small" }, "The name in the top bar shows whose link this is. “My CVs” appears there once you have saved a CV.")),
 
     guideSection("Upload a CV",
       h("ol", {},
@@ -366,7 +392,7 @@ function guidePage() {
           "Nothing is sent until you send it yourself."))),
 
     guideSection("Managing your CVs",
-      h("p", {}, link("Saved CVs", { view: "cvs" }), " lists the CVs you saved."),
+      h("p", {}, link("My CVs", { view: "cvs" }), " (in the top bar) lists the CVs you saved."),
       h("ul", {},
         h("li", {}, h("b", {}, "Stop daily checks: "), "no more daily searches for that CV; its past results stay. You can resume later."),
         h("li", {}, h("b", {}, "Delete: "), "removes the CV and every result made from it. This cannot be undone.")),
@@ -541,6 +567,8 @@ async function route() {
   clearTimeout(poll);
   try {
     await me();
+    await savedCvs();
+    nav(p.get("view"));
     if (p.get("run") && p.get("case") !== null) await casePage(p.get("run"), Number(p.get("case")));
     else if (p.get("run")) await runPage(p.get("run"));
     else if (p.get("request")) await requestPage(p.get("request"));
@@ -555,5 +583,6 @@ async function route() {
 
 back.addEventListener("click", () => (history.length > 1 ? history.back() : go({})));
 guideLink.addEventListener("click", (event) => { event.preventDefault(); go({ view: "guide" }); });
+cvsLink.addEventListener("click", (event) => { event.preventDefault(); go({ view: "cvs" }); });
 window.addEventListener("hashchange", route);
 route();
