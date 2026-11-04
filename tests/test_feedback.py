@@ -26,7 +26,7 @@ ROWS = [row("up", contact=True), row("down", "high", case="Case B", reason="not_
 class FeedbackTests(unittest.TestCase):
     def test_summary_counts_current_ratings_only(self):
         s = feedback.summarize(ROWS)
-        self.assertEqual((s["ratings"], s["useful"], s["would_contact"], s["emailed"], s["changed"]), (3, 33, 1, 1, 1))
+        self.assertEqual((s["ratings"], s["useful"], s["would_contact"], s["emailed"]), (3, 33, 1, 1))
         self.assertEqual(s["by_tier"], {"high": {"n": 2, "useful": 50}, "medium": {"n": 1, "useful": 0}})
         self.assertEqual(s["by_source"]["Web page only"], {"n": 1, "useful": 0})
         self.assertEqual(s["reasons"], {"Not relevant to this expert": 1, "Relevant, but the level is wrong": 1})
@@ -34,7 +34,7 @@ class FeedbackTests(unittest.TestCase):
         self.assertEqual([r["case_name"] for r in s["attention"]], ["Case B"])
         self.assertEqual(list(s["by_version"]), ["deepseek-flash / prompts ab12cd34"])
         text = feedback.report(s)
-        self.assertIn("3 ratings, 33% useful", text)
+        self.assertIn("3 ratings, 33% useful, 1 would contact, 1 drafts opened email", text)
         self.assertIn("Needs attention (High, not useful): Case B for jane.pdf by advisor - Not relevant to this expert: Pro se", text)
         self.assertEqual(feedback.report(feedback.summarize([])), "No ratings yet.")
 

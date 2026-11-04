@@ -5,8 +5,9 @@ who, run_id, case_index, case_name, cv, kind ("rating" or "email"), verdict ("up
 email "gmail"/"mail"/"copy"), reason, should_be, would_contact, note, current, at, and snapshot
 (what the system decided then: tier, score, source, model, prompt_version...).
 
-Only current ratings count: a person's newer rating of a case replaces their older one, which is
-kept as history. The website's Feedback page (site/app.js) shows the same figures.
+A person gives one rating per case, saved only when they submit it (migrations 019, 020). Email
+rows are counted ("drafts opened email") but are not ratings. The website's Feedback page
+(site/app.js) shows the same figures.
 """
 import csv
 import io
@@ -50,7 +51,7 @@ def summarize(rows):
     levels = Counter((r["snapshot"].get("tier"), r["should_be"]) for r in rated if r.get("should_be"))
     return {
         "ratings": len(rated), "useful": rate(rated), "would_contact": sum(bool(r["would_contact"]) for r in rated),
-        "emailed": len(emailed), "changed": sum(1 for r in rows if r["kind"] == "rating" and not r["current"]),
+        "emailed": len(emailed),
         "by_tier": by(rated, lambda r: r["snapshot"].get("tier")), "by_source": by(rated, source),
         "by_version": by(rated, lambda r: f"{r['snapshot'].get('model')} / prompts {r['snapshot'].get('prompt_version')}"),
         "by_person": by(rated, lambda r: r["who"]), "by_cv": by(rated, lambda r: r["cv"]),
@@ -70,7 +71,7 @@ def flat(row):
 
 
 def csv_text(rows):
-    """One line per feedback, history included, in the column order of COLUMNS (opens in Excel)."""
+    """One line per feedback row, ratings and email actions, in the column order of COLUMNS (opens in Excel)."""
     buffer = io.StringIO()
     writer = csv.DictWriter(buffer, COLUMNS, extrasaction="ignore")
     writer.writeheader()
@@ -85,7 +86,7 @@ def report(summary):
         return "No ratings yet."
     pct = lambda v: "-" if v is None else f"{v}%"
     lines = [f"{summary['ratings']} ratings, {pct(summary['useful'])} useful, {summary['would_contact']} would contact, "
-             f"{summary['emailed']} drafts opened or copied, {summary['changed']} ratings changed later"]
+             f"{summary['emailed']} drafts opened email"]
     for title, key in (("By level", "by_tier"), ("By source", "by_source"), ("By version", "by_version"),
                        ("By person", "by_person"), ("By CV", "by_cv")):
         lines.append(f"{title}: " + " · ".join(f"{k} {pct(v['useful'])} of {v['n']}" for k, v in summary[key].items()))

@@ -16,6 +16,7 @@ python -m src.matching.cloud --dotenv keys | revoke-key advisor               li
 python -m src.matching.cloud --dotenv add-emails                              add lawyers' addresses to older checks
 python -m src.matching.cloud --dotenv set-dispatch-token                      let uploads start cloud runs (Vault)
 python -m src.matching.cloud --dotenv feedback [--csv F] [--json F]          feedback statistics and exports
+python -m src.matching.cloud --dotenv delete-feedback --who terrychen        delete one person's feedback (tests)
 python -m src.matching.cloud --dotenv log [--days N]                         schedule, runs, failures (PostgreSQL)
 
 The results website (site/, on GitHub Pages) reads the daily checks through database functions
@@ -150,6 +151,11 @@ class CloudRuns:
                  "verdict": r["verdict"], "reason": r["reason"], "should_be": r["should_be"],
                  "would_contact": bool(r["would_contact"]), "note": r["note"], "current": bool(r["current"]),
                  "at": r["created_at"], "snapshot": json.loads(r["snapshot_json"] or "{}")} for r in rows]
+
+    def delete_feedback(self, who):
+        """Delete every feedback row the person `who` gave (ratings and email actions); returns how many."""
+        with self.session() as store, store.transaction():
+            return store.execute("DELETE FROM matching_feedback WHERE owner=?", (who,)).rowcount
 
     def new_key(self, label, admin=False):
         """Make a website access key for the person `label`; returns it. Only its hash is saved.
@@ -298,6 +304,8 @@ def main(argv=None):
     feedback = commands.add_parser("feedback", help="Feedback statistics from the website, with optional exports")
     feedback.add_argument("--csv", type=Path, help="Also write every feedback row to this CSV file")
     feedback.add_argument("--json", type=Path, help="Also write every feedback row, with its snapshot, to this JSON file")
+    delete_feedback = commands.add_parser("delete-feedback", help="Delete all feedback one person gave (test feedback)")
+    delete_feedback.add_argument("--who", required=True, help="The person's link label, as the Feedback page shows it")
     log = commands.add_parser("log", help="What ran in the cloud: schedule, runs with timings and errors, uploads, docket monitor")
     log.add_argument("--days", type=int, default=2, help="How far back (1 to 60 days)")
     args = parser.parse_args(argv)
@@ -353,6 +361,8 @@ def main(argv=None):
             print("Stored the GitHub token in Supabase Vault as matching_github_token.")
         elif args.command == "revoke-key":
             print(f"Turned off {cloud.revoke_keys(args.label)} link(s) labelled {args.label}.")
+        elif args.command == "delete-feedback":
+            print(f"Deleted {cloud.delete_feedback(args.who)} feedback row(s) from {args.who}.")
         elif args.command == "log":
             if store.backend != "postgres":
                 print("The log is kept in the cloud database (PostgreSQL) only.")

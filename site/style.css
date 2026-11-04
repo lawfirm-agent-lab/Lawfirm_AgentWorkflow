@@ -166,3 +166,8 @@ textarea.note { min-height: 70px; margin-top: 12px; }
 .log-trace[open] summary { margin-bottom: 8px; }
 .log-pre { white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
   background: var(--quote); border-radius: 8px; padding: 10px; max-height: 420px; overflow: auto; margin: 4px 0 10px; }
+.feedback-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: start; border-top: 1px solid var(--line); }
+.card > .feedback-row:first-child { border-top: 0; }
+.feedback-row > .case { border-top: 0; margin-top: 0; }
+.btn.small-btn { padding: 6px 10px; font-size: 13px; margin-top: 12px; }
+.card > .feedback-row:first-child .small-btn { margin-top: 0; }

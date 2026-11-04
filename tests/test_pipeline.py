@@ -328,6 +328,32 @@ class MigrationTests(unittest.TestCase):
         self.assertEqual(apply_migrations(store)[0], "003_court_info")
         self.assertEqual(store.execute("SELECT court_id FROM docket_info").fetchone()["court_id"], "nysd")
 
+    def test_feedback_migration_drops_replaced_taps_and_allows_one_rating(self):
+        import shutil
+        import tempfile
+        from pathlib import Path
+        from src.store.migrate import MIGRATIONS, apply_migrations
+        store = Store(":memory:")
+        self.addCleanup(store.close)
+        with tempfile.TemporaryDirectory() as directory:
+            for path in MIGRATIONS.glob("0*.sql"):
+                if path.name < "019":
+                    shutil.copy(path, Path(directory) / path.name)
+            apply_migrations(store, directory)
+        row = "INSERT INTO matching_feedback (feedback_id, owner, run_id, case_index, kind, verdict, current, created_at) " \
+              "VALUES (?, 'terry', 'r1', 0, ?, ?, ?, 't')"
+        with store.transaction():
+            for values in (("a", "rating", "up", 0), ("b", "rating", "down", 0), ("c", "rating", "down", 1),
+                           ("d", "email", "gmail", 1), ("e", "email", "copy", 1)):
+                store.execute(row, values)
+        self.assertEqual(apply_migrations(store)[0], "019_matching_feedback_once")
+        kept = [r["feedback_id"] for r in store.execute("SELECT feedback_id FROM matching_feedback ORDER BY feedback_id")]
+        self.assertEqual(kept, ["c", "d", "e"])  # The replaced taps are gone; email actions stay.
+        with self.assertRaises(Exception), store.transaction():
+            store.execute(row, ("f", "rating", "up", 1))  # A second rating of the same case.
+        with store.transaction():
+            store.execute(row, ("g", "email", "gmail", 1))  # Email actions are not limited.
+
     def test_statements_keep_dollar_quoted_bodies_whole(self):
         from src.store.migrate import statements
         text = ("-- note; not a statement\nCREATE TABLE a (x TEXT);\n"

@@ -342,48 +342,57 @@ function choices(options, selected, onPick) {
     h("button", { class: "chip", type: "button", "aria-pressed": String(selected === value), onclick: () => onPick(value) }, label)));
 }
 
-// "Was this case useful?" One tap saves the verdict; the details below it are optional.
+// "Was this case useful?" Nothing is saved until the person submits; Cancel puts the box back as
+// it was. Each person gives one feedback per case, so after submitting the box only thanks them.
 async function feedbackBox(runId, index) {
   const box = h("section", { class: "card feedback" });
-  let saved = await rpc("matching_feedback_case", { access_key: accessKey(), which_run: runId, idx: index });
+  const saved = await rpc("matching_feedback_case", { access_key: accessKey(), which_run: runId, idx: index });
   let draft = {};
-  const send = async (fields, message) => {
+  const thanks = (given) => box.replaceChildren(
+    h("h3", {}, "✓ Thanks for your feedback!"),
+    h("p", { class: "small" }, "We will use it to improve the matching."),
+    h("p", { class: "muted small" }, `You said: ${meta(given.verdict === "up" ? "👍 Useful" : "👎 Not right",
+      given.reason && REASONS[given.reason], given.should_be && `should be ${LEVELS[given.should_be]}`,
+      given.would_contact && "would contact the lawyers")}${given.note ? ` · “${given.note}”` : ""}`));
+  const submit = async (button, status) => {
+    button.disabled = true;
     try {
-      saved = await rpc("matching_feedback_give", { access_key: accessKey(), which_run: runId, idx: index,
-        verdict: fields.verdict, reason: fields.reason || null, should_be: fields.should_be || null,
-        would_contact: Boolean(fields.would_contact), note: fields.note || null });
-      draft = {};
-      render(message);
+      thanks(await rpc("matching_feedback_give", { access_key: accessKey(), which_run: runId, idx: index,
+        verdict: draft.verdict, reason: draft.reason || null, should_be: draft.should_be || null,
+        would_contact: Boolean(draft.would_contact), note: (draft.note || "").trim() || null }));
     } catch (error) {
-      render(error.message);
+      status.textContent = error.message;
+      button.disabled = false;
     }
   };
-  const render = (message) => {
-    const current = { ...(saved || {}), ...draft };
-    const pick = (field) => (value) => { draft[field] = current[field] === value ? null : value; render(); };
-    const note = h("textarea", { class: "note", placeholder: "Note (optional): what was wrong, or what made it useful",
-      maxlength: 1000, oninput: (event) => { draft.note = event.target.value; } }, current.note || "");
+  const render = () => {
+    const choose = (verdict) => { draft = { verdict, note: draft.note }; render(); };
+    const pick = (field) => (value) => { draft[field] = draft[field] === value ? null : value; render(); };
+    const status = h("p", { class: "muted small" }, draft.verdict ? "Nothing is saved until you submit."
+      : "Your feedback shows where the matching is wrong, so it can be improved.");
+    const button = h("button", { class: "btn", type: "button" }, "Submit feedback");
+    button.addEventListener("click", () => submit(button, status));
     box.replaceChildren(...[
       h("div", { class: "top" }, h("h3", {}, "Was this case useful?"),
         h("div", { class: "buttons tight" },
-          h("button", { class: "btn light vote", type: "button", "aria-pressed": String(current.verdict === "up"),
-            onclick: () => send({ verdict: "up" }, "Saved: useful.") }, "👍 Useful"),
-          h("button", { class: "btn light vote", type: "button", "aria-pressed": String(current.verdict === "down"),
-            onclick: () => send({ verdict: "down" }, "Saved: not useful. Telling us why helps most.") }, "👎 Not right"))),
-      saved ? [
-        current.verdict === "up"
-          ? h("label", { class: "pick plain" }, h("input", { type: "checkbox", checked: Boolean(current.would_contact),
+          h("button", { class: "btn light vote", type: "button", "aria-pressed": String(draft.verdict === "up"),
+            onclick: () => choose("up") }, "👍 Useful"),
+          h("button", { class: "btn light vote", type: "button", "aria-pressed": String(draft.verdict === "down"),
+            onclick: () => choose("down") }, "👎 Not right"))),
+      draft.verdict ? [
+        draft.verdict === "up"
+          ? h("label", { class: "pick plain" }, h("input", { type: "checkbox", checked: Boolean(draft.would_contact),
               onchange: (event) => { draft.would_contact = event.target.checked; } }), h("span", {}, "I would contact the lawyers on this case"))
-          : [h("label", {}, "Why not?"), choices(REASONS, current.reason, pick("reason")),
-             h("label", {}, "What level should it be?"), choices(LEVELS, current.should_be, pick("should_be"))],
-        note,
-        h("div", { class: "buttons" }, h("button", { class: "btn", type: "button",
-          onclick: () => send({ ...saved, ...draft, note: note.value }, "Details saved.") }, "Save details"))] : null,
-      h("p", { class: "muted small" }, message || (saved ? `Your feedback from ${day(saved.at)}. You can change it any time.`
-        : "One tap is enough. Your feedback shows where the matching is wrong, so it can be improved."))]
-      .flat(Infinity).filter(Boolean));
+          : [h("label", {}, "Why not?"), choices(REASONS, draft.reason, pick("reason")),
+             h("label", {}, "What level should it be?"), choices(LEVELS, draft.should_be, pick("should_be"))],
+        h("textarea", { class: "note", placeholder: "Note (optional): what was wrong, or what made it useful", maxlength: 1000,
+          oninput: (event) => { draft.note = event.target.value; } }, draft.note || ""),
+        h("div", { class: "buttons" }, button,
+          h("button", { class: "btn light", type: "button", onclick: () => { draft = {}; render(); } }, "Cancel"))] : null,
+      status].flat(Infinity).filter(Boolean));
   };
-  render();
+  if (saved) thanks(saved);
+  else render();
   return box;
 }
 
@@ -467,31 +476,41 @@ async function feedbackPage() {
   }
   const attention = down.filter((r) => r.snapshot.tier === "high");
   const stamp = new Date().toISOString().slice(0, 10);
-  const line = (r) => h("button", { class: "case", type: "button", onclick: () => go({ run: r.run_id, case: r.case_index }) },
-    h("div", { class: "top" },
-      h("span", { class: `tier ${r.kind === "email" ? "medium" : r.verdict === "up" ? "high" : "low"}` },
-        r.kind === "email" ? `✉ ${r.verdict}` : r.verdict === "up" ? "👍 Useful" : "👎 Not right"),
-      r.snapshot.tier ? tierTag(r.snapshot.tier) : null,
-      h("span", { class: "score" }, meta(day(r.at), r.who, r.current ? null : "replaced later"))),
-    h("div", { class: "name" }, r.case_name),
-    h("div", { class: "muted small" }, meta(r.cv, SOURCES[r.snapshot.source], r.reason && REASONS[r.reason],
-      r.should_be && `should be ${LEVELS[r.should_be]}`, r.would_contact && "would contact")),
-    r.note ? h("div", { class: "why small" }, `“${r.note}”`) : null);
+  const remove = async (r) => {
+    if (!window.confirm(`Delete ${r.who}'s feedback on ${r.case_name}? This cannot be undone.`)) return;
+    try {
+      await rpc("matching_feedback_delete", { access_key: accessKey(), feedback: r.id });
+      await feedbackPage();
+    } catch (error) {
+      window.alert(error.message);
+    }
+  };
+  const line = (r) => h("div", { class: "feedback-row" },
+    h("button", { class: "case", type: "button", onclick: () => go({ run: r.run_id, case: r.case_index }) },
+      h("div", { class: "top" },
+        h("span", { class: `tier ${r.verdict === "up" ? "high" : "low"}` }, r.verdict === "up" ? "👍 Useful" : "👎 Not right"),
+        r.snapshot.tier ? tierTag(r.snapshot.tier) : null,
+        h("span", { class: "score" }, meta(day(r.at), r.who))),
+      h("div", { class: "name" }, r.case_name),
+      h("div", { class: "muted small" }, meta(r.cv, SOURCES[r.snapshot.source], r.reason && REASONS[r.reason],
+        r.should_be && `should be ${LEVELS[r.should_be]}`, r.would_contact && "would contact")),
+      r.note ? h("div", { class: "why small" }, `“${r.note}”`) : null),
+    h("button", { class: "btn danger small-btn", type: "button", onclick: () => remove(r) }, "Delete"));
   show(
     h("div", { class: "headline" }, h("h1", {}, "Feedback"),
       h("div", { class: "buttons tight" },
         h("button", { class: "btn", type: "button", onclick: () => download(`expert-match-feedback-${stamp}.csv`, "text/csv", csvOf(all)) }, "Download CSV"),
         h("button", { class: "btn light", type: "button", onclick: () => download(`expert-match-feedback-${stamp}.json`, "application/json",
           JSON.stringify(all, null, 1)) }, "Download JSON"))),
-    h("p", { class: "muted small intro" }, "Ratings from everyone's case pages. A newer rating of a case replaces the same person's older one; " +
-      "downloads include every row, history too, with what the system decided at the time."),
+    h("p", { class: "muted small intro" }, "Feedback people submitted on case pages, one per person and case. " +
+      "Downloads include every row, with what the system decided at the time. Delete test feedback with its Delete button."),
     h("div", { class: "controls" },
       filter("days", days, [[7, "Last 7 days"], [30, "Last 30 days"], [90, "Last 90 days"], [9999, "All time"]], "Period"),
       filter("who", who, [["", "Everyone"], ...[...new Set(all.map((r) => r.who))].sort().map((w) => [w, w])], "Person"),
       filter("fcv", cv, [["", "All CVs"], ...[...new Set(all.map((r) => r.cv))].sort().map((c) => [c, c])], "CV")),
     h("div", { class: "tiles" },
       [[rated.length, "ratings"], [pct(usefulRate(rated)), "useful"], [rated.filter((r) => r.would_contact).length, "would contact"],
-       [emailed.size, "drafts opened"], [shown ? pct(Math.round((100 * ratedCases.size) / shown)) : "–", `of ${shown} cases shown rated`]]
+       [emailed.size, "drafts opened email"], [shown ? pct(Math.round((100 * ratedCases.size) / shown)) : "–", `of ${shown} cases shown rated`]]
         .map(([value, label]) => h("div", { class: "tile" }, h("b", {}, String(value)), h("span", {}, label)))),
     rated.length ? null : h("div", { class: "notice" }, h("h3", {}, "No ratings in this period"),
       h("p", { class: "muted" }, "Ratings appear here once people use 👍 / 👎 on a case page.")),
@@ -508,8 +527,8 @@ async function feedbackPage() {
     bars("By version (model / prompts)", grouped(rated, (r) => `${r.snapshot.model || "?"} / ${r.snapshot.prompt_version || "before versions"}`)),
     bars("By person", grouped(rated, (r) => r.who)),
     bars("By CV", grouped(rated, (r) => r.cv)),
-    rows.length ? h("div", { class: "section" }, h("h2", {}, `All feedback in this period (${rows.length})`),
-      h("div", { class: "card" }, rows.slice(0, 200).map(line))) : null);
+    rated.length ? h("div", { class: "section" }, h("h2", {}, `All feedback in this period (${rated.length})`),
+      h("div", { class: "card" }, rated.slice(0, 200).map(line))) : null);
 }
 
 // ---- logs (admin only): what ran, when, how long, what it cost and where it failed ----
@@ -777,12 +796,12 @@ function guidePage() {
           "Nothing is sent until you send it yourself."))),
 
     guideSection("Giving feedback",
-      h("p", {}, "At the top of every case: ", h("b", {}, "👍 Useful"), " or ", h("b", {}, "👎 Not right"), ". One tap is enough."),
+      h("p", {}, "At the top of every case: ", h("b", {}, "👍 Useful"), " or ", h("b", {}, "👎 Not right"), ", add details if you like, then submit."),
       h("ul", {},
         h("li", {}, "After 👎 you can say why (not relevant, wrong level, misread, wrong lawyer details, already known) and what level it should be."),
         h("li", {}, "After 👍 you can tick “I would contact the lawyers”."),
         h("li", {}, "A short note helps most: what was wrong, or what made it useful."),
-        h("li", {}, "You can change your answer any time; the latest one counts.")),
+        h("li", {}, "Nothing is saved until you tap “Submit feedback”; “Cancel” clears your choice. Each case takes one feedback.")),
       h("p", { class: "muted small" }, "Opening or copying an email draft is noted too, as a sign the case was worth contacting someone about. " +
         "Feedback is used only to measure and improve the matching. It is kept when a CV is deleted, but contains no part of the CV.")),
 
