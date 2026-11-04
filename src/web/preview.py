@@ -189,8 +189,15 @@ def main():
     if not cloud_url:
         print("Set DATABASE_URL in .env (the cloud database to copy).")
         return 1
-    if shutil.which("docker") is None or docker("info", check=False).returncode:
-        print("Docker is not running. Start Docker Desktop and try again.")
+    if shutil.which("docker") is None:
+        print("This terminal cannot find the docker command. Install Docker Desktop, or add "
+              "/usr/local/bin to PATH (check with: which docker).")
+        return 1
+    info = docker("info", "--format", "{{.ServerVersion}}", check=False)
+    if info.returncode:
+        reason = (info.stderr or info.stdout).strip().splitlines()
+        print("Docker is not answering. Start Docker Desktop (wait until it says it is running) and try again.")
+        print(f"  docker said: {reason[-1][:200] if reason else 'nothing'}")
         return 1
     stop()  # A preview left over from an earlier run.
     try:
