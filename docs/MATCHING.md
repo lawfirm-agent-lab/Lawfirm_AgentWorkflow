@@ -107,6 +107,11 @@ The job needs these repository settings: secrets `DATABASE_URL`, `COURTLISTENER_
 - **Edits show on refresh.** Changes to `site/` show on the next page refresh; a change to the SQL needs a restart.
 - **Ctrl+C** stops it and deletes the copy.
 - **Not included**: the schedule history and GitHub dispatches, so an upload made in the preview never runs.
+- **Only this computer can reach it**:
+  - every port listens on 127.0.0.1;
+  - the site refuses requests addressed to any other name (DNS rebinding) and API calls sent by other websites;
+  - the API accepts only requests signed with a secret made at each start;
+  - the database password is also made at each start.
 
 **One link per person.** Each link's label names its holder (`new-key --label advisor`); that person sees and manages only the CVs they uploaded and the results made from them, and a file name someone else already uses gets a number (`cv.pdf` → `cv-2.pdf`), so nobody's CV is replaced. An admin link (`new-key --label terry --admin`) sees and manages everything. CVs, runs and uploads record their owner (migration 011); those made before, or saved from the command line or the local web app, are the admin's. The functions in [012_matching_owner_functions.postgres.sql](../sql/migrations/012_matching_owner_functions.postgres.sql) filter by the caller, and `matching_whoami` names the holder in the page header. Each person may upload 10 CVs a day.
 

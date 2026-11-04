@@ -11,8 +11,18 @@ SQL needs a restart. Ctrl+C stops it and removes the containers and the copy.
 
 Not in the copy: the daily schedule's history and GitHub dispatches (pg_cron, pg_net), so an
 upload made in the preview waits and is never run.
+
+Only this computer can reach it: every port listens on 127.0.0.1. The site answers only requests
+addressed to 127.0.0.1:8090 or localhost:8090 (a web page can point another name at 127.0.0.1 to
+reach local servers) and refuses API calls sent by other websites. The API behind it takes only
+requests signed with a secret made at each start, which only this server sends, and the database
+password is also made at each start.
 """
+import base64
+import hashlib
+import hmac
 import json
+import secrets
 import shutil
 import subprocess
 import sys
@@ -28,7 +38,10 @@ ROOT = Path(__file__).resolve().parents[2]
 SITE = ROOT / "site"
 NAME = "expert-match-preview"
 DB_PORT, API_PORT, WEB_PORT = 55440, 55441, 8090
-LOCAL = f"postgresql://postgres:preview@127.0.0.1:{DB_PORT}/preview"
+PASSWORD = secrets.token_urlsafe(18)
+LOCAL = f"postgresql://postgres:{PASSWORD}@127.0.0.1:{DB_PORT}/preview"
+JWT_SECRET = secrets.token_urlsafe(36)
+HOSTS = {f"127.0.0.1:{WEB_PORT}", f"localhost:{WEB_PORT}"}
 POSTGREST = "postgrest/postgrest:v12.2.3"
 # Copied in this order; columns the copy has but the cloud does not yet get their defaults.
 TABLES = ("matching_access_keys", "matching_cvs", "matching_runs", "matching_requests", "matching_feedback", "pipeline_runs")
@@ -36,6 +49,14 @@ TABLES = ("matching_access_keys", "matching_cvs", "matching_runs", "matching_req
 
 def docker(*args, check=True):
     return subprocess.run(["docker", *args], check=check, capture_output=True, text=True)
+
+
+def token(role="anon"):
+    """A JWT (HS256) PostgREST accepts as the website's role; only this process knows the secret."""
+    encode = lambda data: base64.urlsafe_b64encode(json.dumps(data, separators=(",", ":")).encode()).rstrip(b"=")
+    body = encode({"alg": "HS256", "typ": "JWT"}) + b"." + encode({"role": role})
+    signature = base64.urlsafe_b64encode(hmac.new(JWT_SECRET.encode(), body, hashlib.sha256).digest()).rstrip(b"=")
+    return (body + b"." + signature).decode()
 
 
 def stop():
@@ -111,7 +132,21 @@ class Handler(SimpleHTTPRequestHandler):
     def log_message(self, *args):
         pass
 
+    def allowed(self, api=False):
+        """Refuse requests not addressed to this server, and API calls sent by other websites."""
+        origin = self.headers.get("Origin")
+        if self.headers.get("Host") not in HOSTS or (api and origin and origin.split("//")[-1] not in HOSTS):
+            self.send_error(403)
+            return False
+        return True
+
+    def do_HEAD(self):
+        if self.allowed():
+            super().do_HEAD()
+
     def do_GET(self):
+        if not self.allowed():
+            return
         if self.path.split("?")[0] == "/config.js":
             body = f'window.EXPERT_MATCH = {json.dumps({"url": f"http://127.0.0.1:{WEB_PORT}", "key": "preview"})};'.encode()
             self.send_response(200)
@@ -127,12 +162,15 @@ class Handler(SimpleHTTPRequestHandler):
         super().end_headers()
 
     def do_POST(self):
+        if not self.allowed(api=True):
+            return
         if not self.path.startswith("/rest/v1/rpc/"):
             self.send_error(404)
             return
         body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
         request = urllib.request.Request(f"http://127.0.0.1:{API_PORT}/rpc/{self.path.rsplit('/', 1)[-1]}", data=body,
-                                         headers={"Content-Type": "application/json"}, method="POST")
+                                         headers={"Content-Type": "application/json",
+                                                  "Authorization": f"Bearer {token()}"}, method="POST")
         try:
             with urllib.request.urlopen(request, timeout=60) as answer:
                 status, data = answer.status, answer.read()
@@ -158,7 +196,7 @@ def main():
     try:
         print("Starting a throwaway database...")
         docker("network", "create", NAME)
-        docker("run", "-d", "--rm", "--name", f"{NAME}-db", "--network", NAME, "-e", "POSTGRES_PASSWORD=preview",
+        docker("run", "-d", "--rm", "--name", f"{NAME}-db", "--network", NAME, "-e", f"POSTGRES_PASSWORD={PASSWORD}",
                "-e", "POSTGRES_DB=preview", "-p", f"127.0.0.1:{DB_PORT}:5432", "postgres:16")
         wait(lambda: not docker("exec", f"{NAME}-db", "pg_isready", "-U", "postgres", "-d", "preview", check=False).returncode
              and not docker("exec", f"{NAME}-db", "psql", "-U", "postgres", "-d", "preview", "-tAc", "SELECT 1", check=False).returncode,
@@ -177,13 +215,16 @@ def main():
             if removed:
                 print(f"  they removed {removed} feedback row(s), as they will in the cloud after merging")
         docker("run", "-d", "--rm", "--name", f"{NAME}-api", "--network", NAME, "-p", f"127.0.0.1:{API_PORT}:3000",
-               "-e", f"PGRST_DB_URI=postgres://postgres:preview@{NAME}-db:5432/preview", "-e", "PGRST_DB_ANON_ROLE=anon",
+               # No anonymous role: a request without this process's signed token is refused.
+               "-e", f"PGRST_DB_URI=postgres://postgres:{PASSWORD}@{NAME}-db:5432/preview", "-e", f"PGRST_JWT_SECRET={JWT_SECRET}",
                "-e", "PGRST_DB_SCHEMAS=public", POSTGREST)
 
         def api_up():
             try:
                 with urllib.request.urlopen(f"http://127.0.0.1:{API_PORT}/", timeout=2):
                     return True
+            except urllib.error.HTTPError:
+                return True  # It answers (refusing a request without a token): it is up.
             except (OSError, urllib.error.URLError):
                 return False
 
