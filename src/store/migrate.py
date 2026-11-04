@@ -2,8 +2,14 @@
 
 A file named NNN_name.postgres.sql runs on PostgreSQL only (functions, grants); on SQLite it is
 recorded as applied without running, so both backends keep the same version list.
+
+python -m src.store.migrate applies the pending ones to DATABASE_URL (TLS required). The website's
+deploy workflow (.github/workflows/pages.yml) runs it before publishing, so the published pages
+never call a database function that is not there yet.
 """
+import os
 import re
+import sys
 from pathlib import Path
 
 from src.store.db import now
@@ -63,3 +69,33 @@ def apply_migrations(store, directory=MIGRATIONS):
         if store.backend == "postgres":
             store.execute(ENABLE_RLS)
     return applied
+
+
+def run(store, out=print):
+    """Apply the pending migrations to an open store and say which; returns them."""
+    applied = apply_migrations(store)
+    out("Applied: " + ", ".join(applied) if applied else "The database is up to date; nothing to apply.")
+    return applied
+
+
+def main(env=os.environ):
+    from src.core.config import ConfigError, secure_database_url
+    from src.store.db import Store, StoreError
+
+    try:
+        store = Store(database_url=secure_database_url(env.get("DATABASE_URL")))
+    except (ConfigError, StoreError) as exc:  # Our own messages: they never include the URL.
+        print(f"FAIL: {exc}")
+        return 1
+    try:
+        run(store)
+    except StoreError as exc:  # The transaction is rolled back: nothing is half applied.
+        print(f"FAIL: {exc}; nothing was changed.")
+        return 1
+    finally:
+        store.close()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -45,7 +45,7 @@ def main():
             return 1
         try:
             from psycopg.conninfo import conninfo_to_dict
-            from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
+            from urllib.parse import urlsplit, urlunsplit, parse_qsl, quote, urlencode
             if not database_url.startswith(("postgresql://", "postgres://")):
                 raise ValueError("Invalid database URI")
             config = conninfo_to_dict(database_url)
@@ -56,7 +56,7 @@ def main():
             query = dict(parse_qsl(parts.query, keep_blank_values=True))
             query["sslmode"] = mode
             query["options"] = "-c statement_timeout=30000 -c lock_timeout=10000 -c search_path=public"
-            database_url = urlunsplit(parts._replace(query=urlencode(query)))
+            database_url = urlunsplit(parts._replace(query=urlencode(query, quote_via=quote)))
         except Exception:
             print("Invalid cloud database configuration; use a PostgreSQL URI with TLS and install requirements.txt.")
             return 1

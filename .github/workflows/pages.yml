@@ -1,9 +1,12 @@
 name: Publish results website
 
+# On every merge that changes the website or the database migrations: first apply the new
+# migrations to Supabase, then publish site/. The site is published only if the database is ready,
+# so a new page never calls a database function that does not exist yet.
 on:
   push:
     branches: [main]
-    paths: ["site/**", ".github/workflows/pages.yml"]
+    paths: ["site/**", "sql/migrations/**", "src/store/**", ".github/workflows/pages.yml"]
   workflow_dispatch:
 
 permissions:
@@ -11,13 +14,37 @@ permissions:
   pages: write
   id-token: write
 
+# One deploy at a time, in order; a migration is never cancelled halfway (it would roll back anyway).
 concurrency:
   group: pages
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
+  migrate:
+    name: Apply new database migrations
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install Python dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Apply migrations to Supabase
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: python -m src.store.migrate
+
   deploy:
     name: Build and publish site/ to GitHub Pages
+    needs: migrate
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     environment:

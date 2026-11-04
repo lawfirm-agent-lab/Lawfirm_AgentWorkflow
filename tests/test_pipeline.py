@@ -354,6 +354,32 @@ class MigrationTests(unittest.TestCase):
         with store.transaction():
             store.execute(row, ("g", "email", "gmail", 1))  # Email actions are not limited.
 
+    def test_migrate_command_applies_pending_once_and_refuses_unsafe_urls(self):
+        import io
+        from contextlib import redirect_stdout
+        from src.store import migrate
+        store = Store(":memory:")
+        self.addCleanup(store.close)
+        said = []
+        self.assertIn("019_matching_feedback_once", migrate.run(store, said.append))
+        self.assertTrue(said[0].startswith("Applied: 001_pipeline"))
+        self.assertEqual(migrate.run(store, said.append), [])
+        self.assertEqual(said[1], "The database is up to date; nothing to apply.")
+        for env, message in (({}, "missing"), ({"DATABASE_URL": "sqlite:///x"}, "PostgreSQL URI"),
+                             ({"DATABASE_URL": "postgresql://u:secret@db.example/x?sslmode=disable"}, "TLS")):
+            out = io.StringIO()
+            with self.subTest(message=message), redirect_stdout(out):
+                self.assertEqual(migrate.main(env), 1)
+            self.assertIn(message, out.getvalue())
+            self.assertNotIn("secret", out.getvalue())
+
+    def test_connection_options_keep_their_spaces(self):
+        from urllib.parse import parse_qs, urlsplit
+        from src.core.config import secure_database_url
+        url = secure_database_url("postgresql://u:p@db.example:5432/x?sslmode=require")
+        self.assertNotIn("+", urlsplit(url).query)  # libpq reads "+" literally, not as a space.
+        self.assertEqual(parse_qs(urlsplit(url).query)["options"], ["-c statement_timeout=30000 -c lock_timeout=10000 -c search_path=public"])
+
     def test_statements_keep_dollar_quoted_bodies_whole(self):
         from src.store.migrate import statements
         text = ("-- note; not a statement\nCREATE TABLE a (x TEXT);\n"
