@@ -10,7 +10,7 @@ from src.core.models import SourceResult
 from src.notifiers.email import EmailNotifier
 from src.pipeline import detect as detect_module
 from src.pipeline.runner import run
-from src.sources.courtlistener import QuotaExhausted, SourceError
+from src.sources.courtlistener import QuotaExhausted, SourceError, Unavailable
 from src.store.db import Store
 from src.store.pipeline import PipelineStore
 
@@ -182,6 +182,24 @@ class PipelineTests(unittest.TestCase):
         watch = self.store.execute("SELECT * FROM docket_watch").fetchone()
         self.assertEqual(watch["cursor_at"], (NOW - timedelta(seconds=120)).isoformat())
         self.assertIsNone(watch["last_error"])
+
+    def test_unavailable_docket_fails_the_run_only_after_three_in_a_row(self):
+        subscribe(self.store, "lawyer@example.com", 2)
+        self.write("INSERT INTO docket_watch(docket_id,cursor_at,created_at) VALUES (2,?,?)",
+                   ("2026-10-23T10:00:00+00:00", "x"))
+        self.start_watch()
+        self.source.pages[DOCKET] = Unavailable("ReadTimeout")
+        self.source.pages[2] = [entry(1, docket=2)]
+        for n in (1, 2):
+            report, _ = self.run_all(now=NOW + timedelta(hours=n), stages=("detect",))
+            self.assertEqual((report["failed"], report["retrying"][0]["failures"]), ([], n))
+            self.assertEqual(report["dockets"], 1)  # the other docket is still checked
+        report, _ = self.run_all(now=NOW + timedelta(hours=3), stages=("detect",))
+        self.assertEqual((report["retrying"], report["failed"][0]["failures"]), ([], 3))
+        self.source.pages[DOCKET] = []
+        report, _ = self.run_all(now=NOW + timedelta(hours=4), stages=("detect",))
+        watch = self.store.execute("SELECT * FROM docket_watch WHERE docket_id=?", (DOCKET,)).fetchone()
+        self.assertEqual((report["failed"], watch["failures"], watch["last_error"]), ([], 0, None))
 
     def test_partial_result_keeps_last_success_and_moves_cursor(self):
         self.start_watch()

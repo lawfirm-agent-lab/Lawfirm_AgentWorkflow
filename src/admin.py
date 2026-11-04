@@ -57,7 +57,7 @@ def listing(store):
         for s in store.execute("SELECT * FROM subscriptions WHERE recipient_id=? ORDER BY docket_id", (r["recipient_id"],)).fetchall():
             lines.append(f"  docket {s['docket_id']} min_importance={s['min_importance']} {'active' if s['active'] else 'inactive'}")
     for w in store.execute("SELECT * FROM docket_watch ORDER BY docket_id").fetchall():
-        lines.append(f"watch {w['docket_id']} cursor={w['cursor_at']} last_success={w['last_success_at']} error={w['last_error'] or '-'}")
+        lines.append(f"watch {w['docket_id']} cursor={w['cursor_at']} last_success={w['last_success_at']} error={w['last_error'] or '-'} failures={w['failures']}")
     return "\n".join(lines) or "No recipients."
 
 

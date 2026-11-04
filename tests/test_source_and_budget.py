@@ -1,11 +1,13 @@
 """CourtListener incremental source and the persistent request budget; network is mocked."""
 import unittest
 from unittest.mock import MagicMock
+
+import requests
 from urllib.parse import urlencode
 
 from src.core.config import Limits
 from src.core.ratelimit import RequestBudget
-from src.sources.courtlistener import CourtListenerSource, QuotaExhausted, SourceError
+from src.sources.courtlistener import CourtListenerSource, QuotaExhausted, SourceError, Unavailable
 from src.store.pipeline import PipelineStore
 
 SINCE, UNTIL = "2026-10-23T10:00:00+00:00", "2026-10-23T12:00:00+00:00"
@@ -72,13 +74,36 @@ class SourceTests(BudgetBase):
             response([row(2), row(1)]),
             response([{"id": "1", "date_modified": SINCE}]),
             response([], NEXT),
-            response(status=500),
+            response(status=404),
             MagicMock(status_code=200, json=lambda: {"results": []}),
         ]
         for case in cases:
             with self.subTest(case=case), self.assertRaises(SourceError):
                 self.t += 100
                 self.fetch(case)
+
+    def test_timeout_or_server_error_is_tried_once_more(self):
+        for first in (requests.ReadTimeout(), requests.ConnectionError(), response(status=502)):
+            with self.subTest(first=first):
+                self.t += 100
+                result, session = self.fetch(first, response([row(1)]))
+                self.assertEqual([r["id"] for r in result.rows], [1])
+                self.assertEqual(session.get.call_count, 2)
+
+    def test_unavailable_after_the_second_try(self):
+        for responses, message in [((requests.ReadTimeout(), requests.ReadTimeout()), "ReadTimeout"),
+                                   ((response(status=500), response(status=503)), "HTTP 503")]:
+            with self.subTest(message=message), self.assertRaisesRegex(Unavailable, message):
+                self.t += 100
+                self.fetch(*responses)
+
+    def test_retry_counts_against_the_budget(self):
+        session = MagicMock()
+        session.get.side_effect = [requests.ReadTimeout()]
+        source = CourtListenerSource(session, self.budget(max_requests_per_run=1))
+        with self.assertRaises(QuotaExhausted):
+            source.fetch_docket_changes(7, SINCE, UNTIL)
+        self.assertEqual(session.get.call_count, 1)
 
     def test_429_pauses_all_requests(self):
         with self.assertRaises(QuotaExhausted):

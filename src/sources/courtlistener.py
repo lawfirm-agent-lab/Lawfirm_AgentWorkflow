@@ -7,6 +7,8 @@ import re
 from datetime import timezone
 from urllib.parse import parse_qs, urlsplit
 
+import requests
+
 from src.core.models import SourceResult
 from src.ingest.probe_incremental import timestamp
 
@@ -15,6 +17,7 @@ PATH = "/api/rest/v4/docket-entries/"
 DOCKETS = "https://" + HOST + "/api/rest/v4/dockets/{}/"
 COURTS = "https://" + HOST + "/api/rest/v4/courts/{}/"
 COURT_ID = re.compile(r"[a-z0-9]{1,15}")
+SERVER_ERRORS = {500, 502, 503, 504}
 
 
 class SourceError(RuntimeError):
@@ -23,6 +26,10 @@ class SourceError(RuntimeError):
 
 class QuotaExhausted(SourceError):
     """The request budget is spent or paused; retry on a later run."""
+
+
+class Unavailable(SourceError):
+    """CourtListener timed out, dropped the connection or had a server error, twice in a row."""
 
 
 def utc(value):
@@ -76,9 +83,20 @@ class CourtListenerSource:
                 "full_name": clean(data, "full_name")}
 
     def _get(self, url, params, envelope=True):
-        if not self.budget.acquire():
-            raise QuotaExhausted("Request budget exhausted or paused")
-        response = self.session.get(url, params=params, timeout=(10, 30), allow_redirects=False)
+        # A timeout, dropped connection or 5xx is tried once more; the budget paces the second try.
+        for attempt in (1, 2):
+            if not self.budget.acquire():
+                raise QuotaExhausted("Request budget exhausted or paused")
+            try:
+                response = self.session.get(url, params=params, timeout=(10, 30), allow_redirects=False)
+            except (requests.Timeout, requests.ConnectionError) as exc:
+                if attempt == 2:
+                    raise Unavailable(type(exc).__name__) from None
+                continue
+            if response.status_code not in SERVER_ERRORS:
+                break
+            if attempt == 2:
+                raise Unavailable(f"HTTP {response.status_code}")
         if response.status_code == 429:
             self.budget.block()
             raise QuotaExhausted("HTTP 429; requests paused for 24 hours")

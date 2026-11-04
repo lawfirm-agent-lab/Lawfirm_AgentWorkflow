@@ -8,10 +8,13 @@ import json
 from datetime import timedelta
 
 from src.ingest.probe_incremental import timestamp
-from src.sources.courtlistener import QuotaExhausted, SourceError
+from src.sources.courtlistener import QuotaExhausted, SourceError, Unavailable
 from src.store.db import content, encode
 
 DOCKET_URL = "https://www.courtlistener.com/api/rest/v4/dockets/{}/"
+# CourtListener often times out for a moment. A docket it is unavailable for is retried on the next
+# run, and only reported as failed (a failed run) after this many failed checks in a row.
+FAIL_AFTER = 3
 
 
 def watched_dockets(store):
@@ -39,7 +42,7 @@ def save(store, source, watch, result, now):
     docket_id, created = watch["docket_id"], 0
     with store.transaction():
         updated = store.execute(
-            "UPDATE docket_watch SET cursor_at=?,last_checked_at=?,last_success_at=?,last_error=NULL,revision=revision+1 "
+            "UPDATE docket_watch SET cursor_at=?,last_checked_at=?,last_success_at=?,last_error=NULL,failures=0,revision=revision+1 "
             "WHERE docket_id=? AND revision=?",
             (result.cursor, now.isoformat(), now.isoformat() if result.complete else watch["last_success_at"],
              docket_id, watch["revision"]))
@@ -72,9 +75,11 @@ def save(store, source, watch, result, now):
 
 
 def record_error(store, docket_id, error, now):
+    """Return the number of failed checks in a row, this one included."""
     with store.transaction():
-        store.execute("UPDATE docket_watch SET last_checked_at=?,last_error=? WHERE docket_id=?",
+        store.execute("UPDATE docket_watch SET last_checked_at=?,last_error=?,failures=failures+1 WHERE docket_id=?",
                       (now.isoformat(), error, docket_id))
+        return store.execute("SELECT failures FROM docket_watch WHERE docket_id=?", (docket_id,)).fetchone()["failures"]
 
 
 def fetch_missing_info(store, source, watches, now, report):
@@ -116,7 +121,7 @@ def fetch_missing_info(store, source, watches, now, report):
 def detect(store, source, settings, now):
     until = now - timedelta(seconds=settings.source_lag_seconds)
     report = {"dockets": 0, "events": 0, "partial": [], "failed": [], "quota_stopped": False,
-              "info_fetched": 0, "courts_fetched": 0, "info_failed": [], "awaiting_description": 0}
+              "retrying": [], "info_fetched": 0, "courts_fetched": 0, "info_failed": [], "awaiting_description": 0}
     with store.transaction():
         watches = [ensure_watch(store, d, now) for d in watched_dockets(store)]
     # Least recently checked first, so a tight budget rotates fairly across dockets.
@@ -134,8 +139,10 @@ def detect(store, source, settings, now):
             break
         except (SourceError, ValueError) as exc:
             # Our own messages only; they never contain credentials or response bodies.
-            record_error(store, watch["docket_id"], str(exc), now)
-            report["failed"].append({"docket_id": watch["docket_id"], "error": str(exc)})
+            failures = record_error(store, watch["docket_id"], str(exc), now)
+            soft = isinstance(exc, Unavailable) and failures < FAIL_AFTER
+            report["retrying" if soft else "failed"].append(
+                {"docket_id": watch["docket_id"], "error": str(exc), "failures": failures})
             continue
         report["dockets"] += 1
         if not result.complete:
