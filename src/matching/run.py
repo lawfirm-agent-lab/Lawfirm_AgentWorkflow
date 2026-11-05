@@ -41,6 +41,7 @@ MIN_WEB_CHARS = 800  # A press release is shorter than a complaint.
 MIN_EXCERPT_CHARS = 200
 OCR_SCREENS = 8
 CASE_PAGES = 150
+CV_TOKENS = 12000
 # The prompts a matching run uses; prompt_version() fingerprints them, so feedback can tell which
 # wording produced a result even when a prompt is edited without a new name.
 PROMPTS_USED = ("expert_cv_v1", "case_search_v1", "case_screen_v1", "case_profile_v1", "case_match_v1", "elsewhere_pick_v1")
@@ -49,7 +50,7 @@ CLOUD_LIMITS = Limits(max_requests_per_run=6)  # Account limits less the pipelin
 
 
 class Model:
-    """JSON calls with a file cache, one retry on a transient error and one on invalid output.
+    """JSON calls with a file cache, one retry on a transient error, a cut-off answer or invalid output.
 
     trace keeps what the run read and every model call's exact input and raw output (cached
     ones too), so each step can be reviewed by a person (web app inspection pages)."""
@@ -64,11 +65,20 @@ class Model:
     def record(self, step, label, **data):
         self.trace.append({"step": step, "label": label, **data})
 
-    def ask(self, prompt_name, user, parse, max_tokens, label=""):
+    def cached(self, prompt_name, user):
+        """The cache file for this prompt and input with this model (it may not exist)."""
         prompt = (PROMPTS / f"{prompt_name}.md").read_text(encoding="utf-8")
         key = hashlib.sha256(json.dumps([self.settings.provider, self.settings.model, self.settings.extra_body,
                                          prompt_name, prompt, user]).encode()).hexdigest()
-        path = self.cache_dir / f"{key}.json"
+        return self.cache_dir / f"{key}.json"
+
+    def remember(self, prompt_name, user, text):
+        """Cache an answer an earlier run got for this prompt and input (src.web.jobs reuses CV profiles)."""
+        self.cached(prompt_name, user).write_text(json.dumps({"prompt": prompt_name, "text": text}), encoding="utf-8")
+
+    def ask(self, prompt_name, user, parse, max_tokens, label=""):
+        prompt = (PROMPTS / f"{prompt_name}.md").read_text(encoding="utf-8")
+        path = self.cached(prompt_name, user)
         if path.exists():
             self.stats["cached"] += 1
             raw = json.loads(path.read_text(encoding="utf-8"))["text"]
@@ -79,7 +89,11 @@ class Model:
             try:
                 reply = self.client.complete(messages, json_mode=True, max_tokens=max_tokens)
             except LLMError as exc:
-                if exc.transient and not attempt:
+                if exc.cut_off is not None:
+                    # Kept in the trace, so the Logs page shows where the answer was cut off.
+                    self.record(prompt_name, label, input=user, output=exc.cut_off, cached=False,
+                                error=f"Cut off at the {max_tokens}-token output limit")
+                if (exc.transient or exc.cut_off is not None) and not attempt:
                     continue
                 raise
             self.stats["calls"] += 1
@@ -127,7 +141,8 @@ def expert_profile(model, path, name=None):
         {"page": p["page"], "method": p["method"], "warnings": p["warnings"], "text": text}
         for p, text in zip(extracted["pages"], pages)])
     body, _ = marked(pages, 60000)
-    parsed = model.ask("expert_cv_v1", f"<cv>\n{body}</cv>", profiles.parse_expert, 6000, label="CV")
+    # 40 items with a quote each can come near 6000 tokens for a long CV (a 42-page one was cut off).
+    parsed = model.ask("expert_cv_v1", f"<cv>\n{body}</cv>", profiles.parse_expert, CV_TOKENS, label="CV")
     profile, dropped = profiles.verify_expert(parsed, pages)
     return {**profile, "file": Path(path).name, "pages": len(pages), "dropped": dropped}
 

@@ -15,11 +15,12 @@ PROVIDERS = {}
 
 class LLMError(RuntimeError):
     """Provider failure. Messages never include keys, prompts or response bodies.
-    transient: a dropped connection, timeout or 5xx, worth one retry."""
+    transient: a dropped connection, timeout or 5xx, worth one retry.
+    cut_off: the text written before the output limit was reached (None for other failures)."""
 
-    def __init__(self, message, transient=False):
+    def __init__(self, message, transient=False, cut_off=None):
         super().__init__(message)
-        self.transient = transient
+        self.transient, self.cut_off = transient, cut_off
 
 
 @dataclass(frozen=True)
@@ -78,7 +79,7 @@ class OpenAICompatibleClient:
             raise LLMError("Unexpected LLM response shape") from None
         if choice.get("finish_reason") == "length":
             # Cut-off JSON would only fail parsing; name the real cause (thinking tokens count too).
-            raise LLMError("LLM output reached max_tokens")
+            raise LLMError("LLM output reached max_tokens", cut_off=text)
         usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
         count = lambda *keys: next((usage[k] for k in keys if type(usage.get(k)) is int), 0)
         return LLMReply(text, count("prompt_tokens"), count("completion_tokens"),

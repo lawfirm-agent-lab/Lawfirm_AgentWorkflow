@@ -14,6 +14,9 @@ read it from disk and survive a server restart (an interrupted run shows as fail
 
 With cloud (src.matching.cloud.CloudRuns), each finished daily check is also saved to the cloud
 database; a failed save is noted in status.json as cloud_error.
+
+A run reuses the CV profile an earlier run of the same CV made (from its trace), so a saved CV's
+profile is made once, by its upload or first check, and not again every day.
 """
 import json
 import secrets
@@ -86,6 +89,21 @@ class Jobs:
                     urls.update(c["url"] for c in (expert.get("discovery") or {}).get("candidates") or [])
         return urls
 
+    def reuse_profiles(self, model, cv_name):
+        """Give model the CV profiles earlier runs of this CV got with the same model and prompts, so
+        a saved CV is profiled once rather than every day: for a long CV the answer varies, and one
+        was cut off at the output limit on some days. A replaced CV is a different input, so it is
+        profiled again. Returns how many were reused."""
+        version, reused = prompt_version(), 0
+        for r in self.history(limit=200):
+            if r["cv"] != cv_name or r.get("model") != self.settings.model or r.get("prompt_version") != version:
+                continue
+            for item in self.trace(r["id"]) or []:
+                if item.get("step") == "expert_cv_v1" and item.get("output") and not item.get("error"):
+                    model.remember("expert_cv_v1", item["input"], item["output"])
+                    reused += 1
+        return reused
+
     def start(self, cv_source, cv_name, find=False, days=None, wait=False):
         """Copy the CV into a new run folder and start the pipeline. Returns the run id or None if busy.
 
@@ -134,6 +152,7 @@ class Jobs:
             status["state"] = "running"
             write_json(folder / "status.json", status)
             model = Model(self.settings, self.data_dir / "cache")
+            self.reuse_profiles(model, status["cv"])
             daily = status.get("daily")
             search = make_search(self.env, self.data_dir, status.get("days", 365), self.ledger) if status.get("find") else None
             web = make_web(self.env, self.data_dir) if search else None
