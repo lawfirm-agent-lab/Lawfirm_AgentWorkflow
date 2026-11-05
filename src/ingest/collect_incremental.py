@@ -5,7 +5,7 @@ import os
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 import requests
 from src.ingest.probe_incremental import BASE, check_next, timestamp
 from src.store.discovery import DiscoveryStore
@@ -143,7 +143,7 @@ def main():
         query.update(sslmode=query.get("sslmode", "require"), options="-c statement_timeout=30000 -c lock_timeout=10000 -c search_path=public")
         stage = "database_connection_or_schema_creation"
         print("START: Database connection and discovery schema initialization.")
-        store = DiscoveryStore(database_url=urlunsplit(parts._replace(query=urlencode(query))))
+        store = DiscoveryStore(database_url=urlunsplit(parts._replace(query=urlencode(query, quote_via=quote))))
         try:
             stage = "collector_lock"
             print("PASS: Database connection and discovery schema initialization.")

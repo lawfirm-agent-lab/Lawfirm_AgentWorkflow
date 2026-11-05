@@ -100,6 +100,13 @@ The job needs these repository settings: secrets `DATABASE_URL`, `COURTLISTENER_
 
 [site/](../site/) is a read-only website on GitHub Pages (https://ctrterry.github.io/Lawfirm_AgentWorkflow/): "New cases by day" per expert, and for each case why it fits, the case summary, the match reasons with their CV and complaint quotes, and an editable email draft that opens in Gmail or the phone's mail app. It is plain HTML and JavaScript and can be added to a phone's home screen.
 
+**Deploying**: a merge to `main` that changes `site/`, `sql/migrations/` or `src/store/` runs [pages.yml](../.github/workflows/pages.yml).
+
+1. **Migrations first**: `python -m src.store.migrate` applies any new migrations to Supabase, in one transaction (a failure changes nothing).
+2. **Then the website**: only if step 1 succeeds is `site/` published.
+
+So the published pages never call a database function that does not exist yet. Run `python -m src.store.migrate` with `DATABASE_URL` set to apply migrations by hand.
+
 **Preview before pushing**: `.venv/bin/python -m src.web.preview` (needs Docker) runs the website on this computer at http://127.0.0.1:8090 with a copy of the cloud data; open it with your own `#key=…`.
 
 - **Nothing in Supabase changes.** The data is read through a read-only connection into a throwaway PostgreSQL behind PostgREST, the same API Supabase uses, so the real database functions run.

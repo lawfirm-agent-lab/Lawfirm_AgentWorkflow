@@ -20,12 +20,12 @@ def main():
             print('FAIL: TLS is required for cloud initialization.')
             return 1
         # Add explicit connection settings without printing credentials.
-        from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
+        from urllib.parse import urlsplit, urlunsplit, parse_qsl, quote, urlencode
         parts = urlsplit(url)
         query = dict(parse_qsl(parts.query, keep_blank_values=True))
         query['sslmode'] = sslmode
         query['options'] = '-c statement_timeout=30000 -c lock_timeout=10000 -c search_path=public'
-        secured_url = urlunsplit(parts._replace(query=urlencode(query)))
+        secured_url = urlunsplit(parts._replace(query=urlencode(query, quote_via=quote)))
         store = Store(database_url=secured_url)
         try:
             # Store creates missing tables transactionally. No rows are inserted.

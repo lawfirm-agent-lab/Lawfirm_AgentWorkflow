@@ -2,7 +2,7 @@
 import os
 from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
 import yaml
 
@@ -95,4 +95,6 @@ def secure_database_url(url):
     if mode not in ("require", "verify-ca", "verify-full"):
         raise ConfigError("DATABASE_URL must use TLS (sslmode=require, verify-ca or verify-full)")
     query.update(sslmode=mode, options="-c statement_timeout=30000 -c lock_timeout=10000 -c search_path=public")
-    return urlunsplit(parts._replace(query=urlencode(query)))
+    # Spaces as %20: libpq reads a + literally ("+statement_timeout"), which a direct connection
+    # refuses. Supabase's pooler ignores these options either way and keeps its own timeouts.
+    return urlunsplit(parts._replace(query=urlencode(query, quote_via=quote)))
