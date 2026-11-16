@@ -1,4 +1,4 @@
-# Docket Agent
+# Docket Agent 
 
 Docket Agent monitors U.S. federal court dockets on [CourtListener](https://www.courtlistener.com/), detects new and changed docket entries, screens them, and emails a digest to the people subscribed to each case.
 
